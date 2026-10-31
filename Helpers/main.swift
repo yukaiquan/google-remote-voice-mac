@@ -151,26 +151,32 @@ do {
     try writeDomain(GoogleTraceSettings.enabled(original))
     reloadLogging()
 
-    let process = Process(); process.executableURL = privateCLI
-    process.arguments = ["convert", "-s", "-f", "ipnhdsr"]
-    let outputPipe = Pipe(); let errorPipe = Pipe()
-    process.standardOutput = outputPipe; process.standardError = errorPipe
+    var process: Process?
+    var outputPipe: Pipe?
+    var errorPipe: Pipe?
+    var generation = 0
     let queue = DispatchQueue(label: "com.miremote.capture.session")
     var decoder = GooglePacketDecoder(peripheralID: identifier.uuidString, attribute: attribute)
     var buffered = Data(); var finished = false; var sourceReady = false
     var errorText = ""
+    var recovery = GoogleCaptureRecovery()
     let began = Date()
     let stopPath = output.deletingLastPathComponent().appendingPathComponent("stop").path
+    func stopChild() {
+        generation += 1 // Ignore already queued callbacks from the old child.
+        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        errorPipe?.fileHandleForReading.readabilityHandler = nil
+        process?.terminationHandler = nil
+        if let child = process, child.isRunning {
+            child.interrupt()
+            for _ in 0..<20 { if !child.isRunning { break }; usleep(50_000) }
+            if child.isRunning { kill(child.processIdentifier, SIGKILL); child.waitUntilExit() }
+        }
+        process = nil; outputPipe = nil; errorPipe = nil
+    }
     func finish(_ reason: String, failed: Bool = false) {
         guard !finished else { return }; finished = true
-        outputPipe.fileHandleForReading.readabilityHandler = nil
-        errorPipe.fileHandleForReading.readabilityHandler = nil
-        if process.isRunning {
-            process.interrupt()
-            // Wait for orderly shutdown; hard-stop only our own child if it fails to exit.
-            for _ in 0..<20 { if !process.isRunning { break }; usleep(50_000) }
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-        }
+        stopChild()
         emit(GoogleCaptureRecord(kind: "disconnected", message: reason))
         do {
             try restoreSettings()
@@ -189,28 +195,51 @@ do {
         let source = DispatchSource.makeSignalSource(signal: sig, queue: queue)
         source.setEventHandler { finish("接收器已停止") }; source.resume(); signals.append(source)
     }
-    outputPipe.fileHandleForReading.readabilityHandler = { handle in
-        let data = handle.availableData
-        queue.async {
-            guard !finished else { return }
-            guard !data.isEmpty else { return }
-            buffered.append(data)
-            if buffered.count > 1_048_576 { finish("数据行超过安全上限", failed: true); return }
-            while let newline = buffered.firstIndex(of: 10) {
-                let line = String(decoding: buffered[..<newline], as: UTF8.self)
-                buffered.removeSubrange(...newline)
-                if !sourceReady && (line.contains("  ATT Receive ") || line.contains("  HCI Event ")) {
-                    sourceReady = true; emit(GoogleCaptureRecord(kind: "ready", message: "实时蓝牙接收已启动，等待按键"))
+    func startChild() throws {
+        stopChild()
+        let current = generation
+        buffered.removeAll(); errorText = ""
+        decoder = GooglePacketDecoder(peripheralID: identifier.uuidString, attribute: attribute)
+        let child = Process(); child.executableURL = privateCLI
+        child.arguments = ["convert", "-s", "-f", "ipnhdsr"]
+        let out = Pipe(); let err = Pipe()
+        child.standardOutput = out; child.standardError = err
+        process = child; outputPipe = out; errorPipe = err
+        out.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            queue.async {
+                guard !finished, current == generation, !data.isEmpty else { return }
+                buffered.append(data)
+                if buffered.count > 1_048_576 { finish("数据行超过安全上限", failed: true); return }
+                while let newline = buffered.firstIndex(of: 10) {
+                    let line = String(decoding: buffered[..<newline], as: UTF8.self)
+                    buffered.removeSubrange(...newline)
+                    if line.contains("  ATT Receive ") || line.contains("  HCI Event ") { sourceReady = true }
+                    if let record = decoder.feed(line) {
+                        emit(record)
+                        if record.kind == "connected" {
+                            sourceReady = true
+                            emit(GoogleCaptureRecord(kind: "ready", message: "已绑定遥控器，等待按键"))
+                        }
+                    }
                 }
-                if let record = decoder.feed(line) { emit(record) }
             }
         }
+        err.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            queue.async {
+                guard !finished, current == generation else { return }
+                errorText = String((errorText + String(decoding: data, as: UTF8.self)).suffix(2000))
+            }
+        }
+        child.terminationHandler = { _ in
+            queue.async {
+                guard !finished, current == generation else { return }
+                finish("PacketLogger 已退出，请检查工具和蓝牙状态", failed: true)
+            }
+        }
+        try child.run()
     }
-    errorPipe.fileHandleForReading.readabilityHandler = { handle in
-        let data = handle.availableData
-        queue.async { errorText = String((errorText + String(decoding: data, as: UTF8.self)).suffix(2000)) }
-    }
-    process.terminationHandler = { _ in queue.async { finish("PacketLogger 已退出，请检查工具和蓝牙状态", failed: true) } }
     let timer = DispatchSource.makeTimerSource(queue: queue)
     timer.schedule(deadline: .now() + 1, repeating: 1)
     timer.setEventHandler {
@@ -221,9 +250,14 @@ do {
         if !sourceReady && Date().timeIntervalSince(began) > 15 {
             finish(errorText.contains("Profile") ? "系统未允许诊断接收，需要检查蓝牙日志配置" : "未收到有效蓝牙记录，请重试", failed: true); return
         }
+        if sourceReady && recovery.shouldRefresh(bound: decoder.isBound, now: Date().timeIntervalSince(began)) {
+            emit(GoogleCaptureRecord(kind: "disconnected", message: "等待遥控器重连，正在刷新连接绑定…"))
+            do { try startChild() }
+            catch { finish("刷新连接失败：\(error.localizedDescription)", failed: true); return }
+        }
         emit(GoogleCaptureRecord(kind: "heartbeat"))
     }
-    do { try process.run() } catch { finish("无法启动 PacketLogger：\(error.localizedDescription)", failed: true) }
+    do { try startChild() } catch { finish("无法启动 PacketLogger：\(error.localizedDescription)", failed: true) }
     emit(GoogleCaptureRecord(kind: "starting", message: "已临时开启诊断接收"))
     timer.resume()
     withExtendedLifetime((signals, timer, lockFD)) { RunLoop.main.run() }

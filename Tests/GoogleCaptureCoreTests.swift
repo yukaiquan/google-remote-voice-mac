@@ -36,6 +36,14 @@ import Foundation
         check(decoder.feed(connected.replacingOccurrences(of:"0x0041",with:"0x0042"))?.kind == "connected", "bind new connection handle")
         check(decoder.feed(notify("03",handle:"0x0042"))?.buttons == [3], "receive on new connection")
 
+        var recovery = GoogleCaptureRecovery()
+        check(!recovery.shouldRefresh(bound: false, now: 4), "wait before refreshing an unbound snapshot")
+        check(recovery.shouldRefresh(bound: false, now: 5), "refresh when live reconnect has no identity snapshot")
+        check(!recovery.shouldRefresh(bound: false, now: 6), "throttle snapshot refreshes")
+        check(!recovery.shouldRefresh(bound: true, now: 10), "never interrupt a bound capture")
+        check(recovery.shouldRefresh(bound: false, now: 11), "recover again after a later disconnect")
+        check(!recovery.shouldRefresh(bound: false, now: 12), "second recovery is also throttled")
+
         var state = GoogleButtonState()
         check(state.update([3]) == [GoogleKeyEdge(button:3, down:true)], "single down")
         check(state.update([3]).isEmpty, "duplicate notification suppressed")

@@ -10,6 +10,7 @@ struct GooglePacketDecoder {
     let peripheralID: String
     let attribute: UInt16
     private var connection: UInt16?
+    var isBound: Bool { connection != nil }
     init(peripheralID: String, attribute: UInt16) {
         self.peripheralID = peripheralID.uppercased(); self.attribute = attribute
     }
@@ -103,5 +104,16 @@ enum GoogleCapturePolicy {
     static func shouldSeize(active: Bool, deviceCount: Int, connected: Bool, currentID: String?, sessionID: String?) -> Bool {
         guard active, deviceCount == 1, connected, let currentID, let sessionID else { return false }
         return currentID.uppercased() == sessionID.uppercased()
+    }
+}
+
+// PacketLogger emits its UUID/handle inventory at launch, not on every reconnect.
+// Refresh only while unbound; never infer identity from a Bluetooth name/handle.
+struct GoogleCaptureRecovery {
+    private var lastRefresh: TimeInterval = 0
+    mutating func shouldRefresh(bound: Bool, now: TimeInterval) -> Bool {
+        guard !bound, now - lastRefresh >= 5 else { return false }
+        lastRefresh = now
+        return true
     }
 }

@@ -114,6 +114,10 @@ import UniformTypeIdentifiers
                 switch record.kind {
                 case "ready": ready = !stopping; status = stopping ? "正在恢复设置…" : record.message
                 case "starting": status = "正在连接实时按键接收…"
+                case "connected": if !stopping { status = "已绑定遥控器，等待按键" }
+                case "disconnected":
+                    ready = false
+                    if !stopping { status = record.message.isEmpty ? "遥控器已断开，等待自动重连…" : record.message }
                 case "buttons": if !stopping { status = "正在接收谷歌遥控器按键" }
                 case "stopped": ready = false; terminalRecord = true; status = record.message
                 case "error": ready = false; terminalRecord = true; status = record.message
