@@ -1,0 +1,29 @@
+# Continuous Hold Voice Implementation Plan
+
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+**Goal:** Keep Google ATVV voice recording active for several minutes while the physical voice key stays held.
+
+**Architecture:** A pure session policy parses AUDIO_START's stream ID and schedules a MIC_EXTEND command every five seconds. Engine owns protocol writes and stops the policy on release/disconnect/shutdown. Handy's hold mode remains unchanged.
+
+**Tech Stack:** Swift, Foundation, CoreBluetooth, macOS, existing Swift executable tests.
+
+---
+
+### Task 1: Protocol policy regression
+- Add `Tests/VoiceSessionTests.swift` and `Sources/VoiceSession.swift`.
+- Verify no session yields no keepalive; a start packet `04 03 02 2B` yields `0E 2B` at five seconds, not earlier.
+- Test duplicate start, ID change, malformed packets, nonfinite clock, release/disconnect, and a simulated five-minute hold.
+- Run `swiftc Sources/VoiceSession.swift Tests/VoiceSessionTests.swift -o /tmp/google-voice-session-tests` then run the executable. Observe expected failure before implementing the policy, then green.
+
+### Task 2: Engine integration
+- Update `Sources/Engine.swift`: on full Google AUDIO_START pass session data to policy; poll from the existing main-actor watchdog; write returned command only for the same connected active voice session.
+- Stop policy on AUDIO_STOP, disconnect and shutdown. Log periodic progress/counts and final duration/keepalive count; never log audio bytes.
+- Add the new test executable to `scripts/run-tests.sh`.
+- Preserve Google fork identity, existing volume and shortcuts when syncing the locally installed build.
+
+### Task 3: Verification and delivery
+- Run `sh scripts/run-tests.sh` and `./build.sh` in both source trees; verify app signatures.
+- Safely replace installed app after capture helper restores settings; keep rollback and current configuration.
+- Validate continuous physical hold for at least three minutes and exactly one Handy result on release. If the remote rejects extension or stops, record reason and fix before claiming long-hold acceptance.
+- Update public README, protocol/troubleshooting and changelog with actual evidence/limits, then commit/push only sanitized source and verify CI.
