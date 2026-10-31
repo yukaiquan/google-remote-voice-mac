@@ -31,6 +31,14 @@ import Foundation
         check(launch.launchURL == nil && launch.display == "F9", "switching back to shortcut disables launch")
         let physical: Set<Int> = [1,3,4,5,6,7,8,10,11,12,13,14,15,17]
         var config = Config.defaultConfig
+        check(config.effectiveVoiceGainDB == 18, "recommended volume adds 6 dB over previous 12 dB setting")
+        config.voiceGainDB = -100
+        check(config.effectiveVoiceGainDB == 0, "volume lower bound")
+        config.voiceGainDB = 100
+        check(config.effectiveVoiceGainDB == 24, "volume upper bound")
+        config.voiceGainDB = .nan
+        check(config.effectiveVoiceGainDB == 18, "non-finite volume uses safe recommendation")
+        config.voiceGainDB = nil
         check(config.buttons.first(where: { $0.usage == 11 })?.keycode == 0x33, "Google back defaults to Backspace")
         check(config.googleDefaultsVersion == 1, "fresh config must not rerun legacy migration after user clears a key")
         check(Set(config.buttons.map(\.usage)).count == config.buttons.count, "no overlapping Xiaomi/Google IDs")
@@ -48,7 +56,12 @@ import Foundation
         let decoded = try! JSONDecoder().decode(Config.self, from: data)
         check(decoded.buttons.first?.keycode == 0x00, "config roundtrip preserves custom target")
         let legacy = #"{"buttons":[],"voice":{"usage":-1,"name":"voice","keycode":54,"cmd":true,"shift":false,"opt":false,"ctrl":false},"voiceStartsMic":true}"#.data(using:.utf8)!
+        let gainJSON = #"{"buttons":[],"voice":{"usage":-1,"name":"voice","keycode":54,"cmd":true,"shift":false,"opt":false,"ctrl":false},"voiceStartsMic":true,"voiceGainDB":18}"#.data(using:.utf8)!
+        let gainConfig = try! JSONDecoder().decode(Config.self, from: gainJSON)
+        let gainEncoded = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(gainConfig)) as! [String:Any]
+        check(gainEncoded["voiceGainDB"] as? Double == 18, "microphone volume survives config roundtrip")
         var old = try! JSONDecoder().decode(Config.self, from: legacy)
+        check(old.effectiveVoiceGainDB == 18, "legacy config receives recommended volume without losing key mappings")
         old.mergeKnown()
         check(old.buttons.count == Config.known.count, "legacy config acquires all known keys")
         print("\(checked-failed)/\(checked) model checks passed")

@@ -217,6 +217,17 @@ final class Engine: ObservableObject {
         sendMapping(mapping, down: false)
     }
 
+    func setVoiceGainDB(_ value: Double) {
+        objectWillChange.send()
+        config.voiceGainDB = value
+        config.voiceGainDB = config.effectiveVoiceGainDB
+        applyVoiceGain()
+        ConfigStore.save(config)
+    }
+    private func applyVoiceGain() {
+        dsp.gain = Float(pow(10, config.effectiveVoiceGainDB / 20))
+    }
+
     func saveConfig() { ConfigStore.save(config); L("配置已保存") }
 
     func setLaunchAtLogin(_ on: Bool) {
@@ -440,7 +451,7 @@ final class Engine: ObservableObject {
         lastHidKeycodeAt[HIDMap.voiceKeycode] = ProcessInfo.processInfo.systemUptime
         if down {
             voiceRXCount = 0; voiceRXBegan = 0; voiceRXEnded = 0
-            codec.reset(); dsp.reset(); audioBuf.removeAll(); pendingSync = nil; syncWait = 0
+            codec.reset(); dsp.reset(); applyVoiceGain(); audioBuf.removeAll(); pendingSync = nil; syncWait = 0
             streaming = true; micStreaming = config.voiceStartsMic
             if v.keycode >= KeyNames.kSpecialBase { startSpecial(v.keycode) }
             else if v.keycode != KeyNames.kNone { postKey(CGKeyCode(v.keycode), down: true, cmd: v.cmd, shift: v.shift, opt: v.opt, ctrl: v.ctrl) }

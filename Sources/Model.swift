@@ -117,6 +117,11 @@ struct Config: Codable {
     var buttons: [ButtonMapping]
     var voice: ButtonMapping       // usage = -1
     var voiceStartsMic: Bool
+    var voiceGainDB: Double? = nil
+    var effectiveVoiceGainDB: Double {
+        let value = voiceGainDB ?? 18
+        return value.isFinite ? min(24, max(0, value)) : 18
+    }
     var googleDefaultsVersion: Int? = nil
 
     static let known = GVRMap.known

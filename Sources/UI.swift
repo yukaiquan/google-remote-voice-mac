@@ -227,6 +227,15 @@ struct ContentView: View {
             Toggle("同时开启麦克风（灌入 BlackHole）", isOn: Binding(
                 get: { e.config.voiceStartsMic },
                 set: { e.config.voiceStartsMic = $0; e.saveConfig() }))
+            HStack {
+                Text("麦克风音量")
+                Slider(value: Binding(get: { e.config.effectiveVoiceGainDB }, set: { e.setVoiceGainDB($0) }), in: 0...24, step: 1)
+                    .frame(maxWidth: 280)
+                Text(String(format: "+%.0f dB", e.config.effectiveVoiceGainDB)).monospacedDigit().frame(width: 65)
+                Button("推荐音量") { e.setVoiceGainDB(18) }
+            }
+            Text("向右调大，自动保存；这里只调整固定音量，不会在停顿时自动放大底噪。")
+                .font(.caption).foregroundColor(.secondary)
             Text("按住语音键 = 按住所录制的键 + （可选）麦克风。").font(.caption).foregroundColor(.secondary)
         }
     }
