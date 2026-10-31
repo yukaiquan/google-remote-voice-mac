@@ -27,3 +27,7 @@
 - Safely replace installed app after capture helper restores settings; keep rollback and current configuration.
 - Validate continuous physical hold for at least three minutes and exactly one Handy result on release. If the remote rejects extension or stops, record reason and fix before claiming long-hold acceptance.
 - Update public README, protocol/troubleshooting and changelog with actual evidence/limits, then commit/push only sanitized source and verify CI.
+
+## 验收调整与最终结果
+
+用户在持续长按测试于95.07秒因蓝牙断开结束后，明确表示“1分钟35秒其实也可以了”。按用户更新后的验收口径交付，不再要求三分钟。实测4726包、约49.7包/秒、19次保活，Handy新增一次结果；取消、数据缺失、断线和自动启动边界的无特权检查均通过。蓝牙断开限制保留并公开说明，不宣称不限时或固定95秒上限。

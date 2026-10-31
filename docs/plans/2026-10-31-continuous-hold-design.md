@@ -22,10 +22,14 @@
 - [x] Present continuous-hold design within the user's authorized request
 - [x] Write design
 - [x] Write implementation plan
-- [ ] Test, implement, validate hardware and publish
+- [x] Test and implement; validate ~95s hardware hold under the user's revised acceptance; publish with explicit disconnect limitation
 
 ## 用户追加要求：默认开启接收
 
 应用启动且目标Google遥控器、语音握手、唯一HID、权限及Apple工具就绪后，默认自动尝试开启普通按键接收。每次应用运行只自动尝试一次；取消授权或失败不循环弹窗。手动停止后本次运行不自动重开。提供可保存的自动开启选项，旧配置默认开启。管理员授权仍由系统要求；不安装常驻root服务、不绕过授权。语音通道独立，不把按键开关与语音是否工作混为一谈。
 
 低延迟在每次语音开始及保活时重新请求，避免长时间闲置后只保留启动时请求而连接退慢。安装脚本在替换后立即重新打开应用，减少更新期间没有进程而不出字的间隙。
+
+## 验收调整与最终结果
+
+用户在持续长按测试于95.07秒因蓝牙断开结束后，明确表示“1分钟35秒其实也可以了”。按用户更新后的验收口径交付，不再要求三分钟。实测4726包、约49.7包/秒、19次保活，Handy新增一次结果；取消、数据缺失、断线和自动启动边界的无特权检查均通过。蓝牙断开限制保留并公开说明，不宣称不限时或固定95秒上限。
