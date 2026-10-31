@@ -24,10 +24,12 @@ enum KeyNames {
     static let kMouseUp = 0x10001, kMouseDown = 0x10002, kMouseLeft = 0x10003, kMouseRight = 0x10004
     static let kMouseClick = 0x10005, kMouseRClick = 0x10006
     static let kScrollUp = 0x10007, kScrollDown = 0x10008
+    static let kVolumeUp = 0x10010, kVolumeDown = 0x10011, kMute = 0x10012, kPlayPause = 0x10013
     static let specials: [(name: String, code: Int)] = [
         ("鼠标 ↑", kMouseUp), ("鼠标 ↓", kMouseDown), ("鼠标 ←", kMouseLeft), ("鼠标 →", kMouseRight),
         ("鼠标左键", kMouseClick), ("鼠标右键", kMouseRClick),
         ("滚轮 ↑", kScrollUp), ("滚轮 ↓", kScrollDown),
+        ("系统音量 +", kVolumeUp), ("系统音量 −", kVolumeDown), ("系统静音", kMute), ("播放/暂停", kPlayPause),
     ]
     static func label(keycode: Int, cmd: Bool, shift: Bool, opt: Bool, ctrl: Bool) -> String {
         if keycode == kNone { return "（不映射 / 保持原键）" }
@@ -60,6 +62,24 @@ enum HIDMap {
     static let voiceKeycode: CGKeyCode = 0x60   // F5
 }
 
+enum GVRMap {
+    static let physicalUsages: Set<Int> = [1,3,4,5,6,7,8,10,11,12,13,14,15,17]
+    // Google 遥控器（VID 0x18D1, G9N9N）：HID 数组报告 [reportID=1, slot0, slot1]，值为按键索引（1-17），0=松开
+    // 索引→usage（实测，参考 voice-input-buddy 抓包）：1=0x19E电源, 2=0xCD播放/暂停, 3-6=0x42-0x45方向,
+    // 7=0x41确认, 8=0xE2静音, 9=0x221(未定), 10=0x223主页, 11=0x224返回, 12/13=0xE9/0xEA音量,
+    // 14=0x77 YouTube, 15=0x78 Netflix, 16=0x79播放, 17=0x89输入源
+    // 语音键不走 HID（无可靠边沿），由 ATVV 控制流驱动
+    static let known: [(usage: Int, name: String)] = [
+        (1, "电源"), (2, "播放/暂停"), (3, "方向 上"), (4, "方向 下"), (5, "方向 左"), (6, "方向 右"),
+        (7, "确认 OK"), (8, "静音"), (9, "星标/自定义"), (10, "主页"), (11, "返回"),
+        (12, "音量 +"), (13, "音量 −"), (14, "YouTube"), (15, "Netflix"), (16, "播放"), (17, "输入源"),
+    ]
+    // macOS 会为这些索引的原生 usage 生成键码（用于拦截原键）：索引 → macOS keycode
+    static let usageToKeycode: [UInt8: CGKeyCode] = [
+        3:0x7E, 4:0x7D, 5:0x7B, 6:0x7C, 7:0x24,
+    ]
+}
+
 struct ButtonMapping: Identifiable, Codable {
     var usage: Int          // HID usage byte; -1 = voice button
     var name: String        // physical button name
@@ -75,24 +95,30 @@ struct ButtonMapping: Identifiable, Codable {
         self.cmd = cmd; self.shift = shift; self.opt = opt; self.ctrl = ctrl
     }
     var display: String { KeyNames.label(keycode: keycode, cmd: cmd, shift: shift, opt: opt, ctrl: ctrl) }
+    var actionID: String { "\(keycode):\(cmd):\(shift):\(opt):\(ctrl)" }
 }
 
 struct Config: Codable {
     var buttons: [ButtonMapping]
     var voice: ButtonMapping       // usage = -1
     var voiceStartsMic: Bool
+    var googleDefaultsVersion: Int? = nil
 
-    static let known: [(usage: Int, name: String)] = [
-        (0x52, "方向 上"), (0x51, "方向 下"), (0x50, "方向 左"), (0x4F, "方向 右"),
-        (0x28, "确认 OK"), (0xF1, "返回 Back"), (0x4A, "主页 Home"),
-        (0x65, "菜单 Menu"), (0x35, "TV 键"), (0x66, "电源 Power"),
-        (0x80, "音量 +"), (0x81, "音量 −"),
-    ]
+    static let known = GVRMap.known
     // sensible defaults (keycodes)
     static let defaultTarget: [Int: (Int,Bool,Bool,Bool,Bool)] = [
         0x52:(0x7E,false,false,false,false), 0x51:(0x7D,false,false,false,false),
         0x50:(0x7B,false,false,false,false), 0x4F:(0x7C,false,false,false,false),
         0x28:(0x24,false,false,false,false), 0xF1:(0x35,false,false,false,false),
+        3:(0x7E,false,false,false,false), 4:(0x7D,false,false,false,false),
+        5:(0x7B,false,false,false,false), 6:(0x7C,false,false,false,false),
+        7:(0x24,false,false,false,false), 11:(0x33,false,false,false,false),
+        1:(0x6F,false,false,false,false), 2:(KeyNames.kPlayPause,false,false,false,false),
+        8:(KeyNames.kMute,false,false,false,false), 9:(0x64,false,false,false,false),
+        10:(0x73,false,false,false,false),
+        12:(KeyNames.kVolumeUp,false,false,false,false), 13:(KeyNames.kVolumeDown,false,false,false,false),
+        14:(0x65,false,false,false,false), 15:(0x6D,false,false,false,false),
+        16:(KeyNames.kPlayPause,false,false,false,false), 17:(0x30,false,false,false,false),
     ]
     static var defaultConfig: Config {
         let btns = known.map { k -> ButtonMapping in
@@ -103,23 +129,36 @@ struct Config: Codable {
         }
         return Config(buttons: btns,
                       voice: ButtonMapping(usage: -1, name: "语音键", keycode: 0x36, cmd: true),
-                      voiceStartsMic: true)
+                      voiceStartsMic: true, googleDefaultsVersion: 1)
     }
     mutating func mergeKnown() {
         for k in Config.known {
             if let i = buttons.firstIndex(where: { $0.usage == k.usage }) {
                 buttons[i].name = k.name
             } else {
-                buttons.append(ButtonMapping(usage: k.usage, name: k.name))
+                // 新增按键沿用默认映射（与全新安装的 defaultConfig 一致），而不是一律"不映射"
+                let t = Config.defaultTarget[k.usage]
+                buttons.append(ButtonMapping(usage: k.usage, name: k.name,
+                    keycode: t?.0 ?? KeyNames.kNone, cmd: t?.1 ?? false,
+                    shift: t?.2 ?? false, opt: t?.3 ?? false, ctrl: t?.4 ?? false))
             }
         }
         let order = Dictionary(uniqueKeysWithValues: Config.known.enumerated().map { ($1.usage, $0) })
         buttons.sort { (order[$0.usage] ?? 999) < (order[$1.usage] ?? 999) }
     }
+    mutating func installGoogleDefaults(overwrite: Bool) {
+        for i in buttons.indices where (1...17).contains(buttons[i].usage) {
+            guard overwrite || buttons[i].keycode == KeyNames.kNone,
+                  let value = Self.defaultTarget[buttons[i].usage] else { continue }
+            buttons[i] = ButtonMapping(usage: buttons[i].usage, name: buttons[i].name,
+                                      keycode: value.0, cmd: value.1, shift: value.2, opt: value.3, ctrl: value.4)
+        }
+        googleDefaultsVersion = 1
+    }
 }
 
 final class ConfigStore {
-    static let dir = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/MiRemote")
+    static let dir = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/GoogleRemoteVoice")
     static let path = (dir as NSString).appendingPathComponent("config.json")
     static func load() -> Config {
         guard let data = FileManager.default.contents(atPath: path),
@@ -127,6 +166,12 @@ final class ConfigStore {
             return Config.defaultConfig
         }
         cfg.mergeKnown()
+        if cfg.googleDefaultsVersion == nil {
+            // One-time upgrade: fill only unmapped Google keys; preserve all existing custom targets.
+            let backup = path + ".before-google-defaults.json"
+            if !FileManager.default.fileExists(atPath: backup) { try? data.write(to: URL(fileURLWithPath: backup), options: .atomic) }
+            cfg.installGoogleDefaults(overwrite: false)
+        }
         return cfg
     }
     static func save(_ cfg: Config) {

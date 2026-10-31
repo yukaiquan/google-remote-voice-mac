@@ -14,6 +14,7 @@ struct ADPCM {
     static let step: [Int32] = [7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,796,876,963,1060,1166,1282,1411,1552,1707,1878,2066,2272,2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,6484,7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,22385,24623,27086,29794,32767]
     static let idxT: [Int32] = [-1,-1,-1,-1,2,4,6,8,-1,-1,-1,-1,2,4,6,8]
     var pred: Int32 = 0, idx: Int32 = 0
+    var highFirst = false   // Google 遥控器固件高 nibble 在前；小米低 nibble 在前
     mutating func reset() { pred = 0; idx = 0 }
     mutating func nib(_ n: UInt8) -> Float {
         let s = ADPCM.step[Int(idx)]; var d = s >> 3
@@ -24,7 +25,10 @@ struct ADPCM {
     }
     mutating func decode(_ data: Data) -> [Float] {
         var o = [Float](); o.reserveCapacity(data.count * 2)
-        for b in data { o.append(nib(b & 15)); o.append(nib((b >> 4) & 15)) }
+        for b in data {
+            if highFirst { o.append(nib((b >> 4) & 15)); o.append(nib(b & 15)) }
+            else { o.append(nib(b & 15)); o.append(nib((b >> 4) & 15)) }
+        }
         return o
     }
 }
@@ -105,6 +109,7 @@ final class Engine: ObservableObject {
     // status published to UI
     @Published var btOn = false
     @Published var remoteConnected = false
+    @Published var remoteName = ""
     @Published var handshakeReady = false
     @Published var blackholeFound = false
     @Published var axTrusted = false
@@ -121,6 +126,26 @@ final class Engine: ObservableObject {
     private let ring = Ring(16000 * 4)
     private var codec = ADPCM()
     private var dsp = VoiceDSP()
+    // ATVV 音频：连续字节流，无帧头；按 frameSize 切帧，CTL 0x0A 同步在帧边界生效
+    private var audioBuf = Data()
+    private var frameSize = 160
+    private var pendingSync: (pred: Int32, idx: Int32)?
+    private var syncWait = 0
+    @Published private(set) var isGoogleRemote = false
+    let googleCapture = GoogleCapture()
+    @Published var googleTestMode = false
+    @Published var googleButtonCounts: [Int: Int] = [:]
+    @Published private(set) var googleInputIssue = ""
+    private var googleHIDDevices: [Int: IOHIDDevice] = [:]
+    private var googleSeized: Set<Int> = []
+    private var capturePeripheralID: String?
+    private var googleState = GoogleButtonState()
+    private var googleTargets: [Int: ButtonMapping] = [:]
+    private var googleRepeatAt: [Int: TimeInterval] = [:]
+    private var lastGooglePacketAt = 0.0
+    private var googleCaptureChanges: AnyCancellable?
+    private var googleWatchdog: Timer?
+    private var voiceTarget: ButtonMapping?
     private let engine = AVAudioEngine()
     private var srcNode: AVAudioSourceNode!
 
@@ -138,6 +163,7 @@ final class Engine: ObservableObject {
     private var voiceHidDown = false   // 语音键的 HID F5 正被按住（需持续吞掉）
     private var downButtonUsage: Int = 0
     private var downTarget: ButtonMapping?
+    private var legacyFilter = LegacyPressFilter()
     private var keyMonitor: Any?
 
     // event tap
@@ -148,30 +174,42 @@ final class Engine: ObservableObject {
     private let TX = CBUUID(string: "AB5E0002-5A21-4F05-BC7D-AF01F617B664")
     private let RX = CBUUID(string: "AB5E0003-5A21-4F05-BC7D-AF01F617B664")
     private let CTL = CBUUID(string: "AB5E0004-5A21-4F05-BC7D-AF01F617B664")
-    private let seed = [CBUUID(string:"1812"), CBUUID(string:"180F"),
-                        CBUUID(string:"AB5E0001-5A21-4F05-BC7D-AF01F617B664")]
+    // 只按 ATVV 语音服务检索；CoreBluetooth 不暴露系统 HID 服务。
+    // 而 180F 电池服务会把蓝牙键盘/鼠标一起误抓进来导致连错设备
+    private let seed = [CBUUID(string:"AB5E0001-5A21-4F05-BC7D-AF01F617B664")]
 
     static let logFile: FileHandle? = {
-        let p = (NSHomeDirectory() as NSString).appendingPathComponent("Desktop/miremote_engine.log")
+        let folder = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs/GoogleRemoteVoice")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let p = folder.appendingPathComponent("engine.log").path
         FileManager.default.createFile(atPath: p, contents: nil)
         return FileHandle(forWritingAtPath: p)
     }()
     func L(_ s: String) {
-        NSLog("[MiRemote] %@", s)
+        NSLog("[GoogleRemoteVoice] %@", s)
         Engine.logFile?.write((s + "\n").data(using: .utf8)!)
         log.append(s); if log.count > 200 { log.removeFirst(log.count - 200) }
     }
 
     // ---------- lifecycle ----------
     func start() {
+        L("启动: 1/8 初始化")
         proxy = BTProxy(self)
         ConfigStore.save(config)   // persist merged button list (power/menu/TV/volume)
+        L("启动: 2/8 配置已存")
         setupAudio()
+        L("启动: 3/8 音频就绪")
         checkPermissions()
+        L("启动: 4/8 权限检查完成 (AX=\(axTrusted) IM=\(inputMonitoringOK) BH=\(blackholeFound))")
         cm = CBCentralManager(delegate: proxy, queue: nil)
+        L("启动: 5/8 蓝牙管理器已建")
         installTap()
+        L("启动: 6/8 拦截器 tap=\(tap != nil)")
         setupHID()
+        setupGoogleCapture()
+        L("启动: 7/8 HID 已设置")
         installKeyCapture()
+        L("启动: 8/8 完成")
         // 守护定时器：① 授权后自动补装事件拦截；② 输出设备脱离 BlackHole 时自动重挂
         Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -186,7 +224,7 @@ final class Engine: ObservableObject {
     }
 
     // ---------- keyboard capture (record a target key) ----------
-    func beginCapture(usage: Int) { capturingUsage = usage; L("请在键盘上按下要映射的键…") }
+    func beginCapture(usage: Int) { releaseGoogleButtons(); capturingUsage = usage; L("请在键盘上按下要映射的键…") }
     func cancelCapture() { capturingUsage = nil }
     func clearMapping(usage: Int) {
         if usage == -1 { config.voice.keycode = KeyNames.kNone; config.voice.cmd = false; config.voice.shift = false; config.voice.opt = false; config.voice.ctrl = false }
@@ -360,19 +398,48 @@ final class Engine: ObservableObject {
     fileprivate func btStateChanged(_ c: CBCentralManager) {
         btOn = (c.state == .poweredOn)
         if btOn { connectRemote() }
+        else { L("⚠️ 蓝牙不可用 (state \(c.state.rawValue)：3=未授权 4=未开启)，请检查蓝牙权限/开关") }
     }
     func connectRemote() {
         guard let c = cm, c.state == .poweredOn else { return }
-        if let d = c.retrieveConnectedPeripherals(withServices: seed).first {
+        if let d = c.retrieveConnectedPeripherals(withServices: seed).first(where: { peripheral in
+            let name = (peripheral.name ?? "").lowercased()
+            return name.contains("chromecast") || name.contains("g9n9n")
+        }) {
+            L("发现遥控器 \(d.name ?? "?")，连接语音通道…")
             dev = d; d.delegate = proxy; capsSent = false; c.connect(d, options: nil)
         } else {
+            L("未发现带 ATVV 语音服务的已连接遥控器（检查遥控器是否已在系统蓝牙连接/本 App 蓝牙权限），3 秒后重试…")
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.connectRemote() }
         }
     }
-    fileprivate func didConnect(_ p: CBPeripheral) { remoteConnected = true; p.discoverServices([ATVV]) }
-    fileprivate func didDisconnect() { remoteConnected = false; handshakeReady = false; streaming = false; connectRemote() }
+    fileprivate func didFailConnect(_ p: CBPeripheral, _ err: Error?) {
+        L("⚠️ 遥控器连接失败: \(err?.localizedDescription ?? "未知")，3 秒后重试")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.connectRemote() }
+    }
+    fileprivate func didConnect(_ p: CBPeripheral) {
+        remoteConnected = true; remoteName = p.name ?? "语音遥控器"
+        let n = (p.name ?? "").lowercased()
+        isGoogleRemote = n.contains("chromecast") || n.contains("g9n9n")
+        if isGoogleRemote { UserDefaults.standard.set(p.identifier.uuidString, forKey: "GooglePeripheralID") }
+        if googleCapture.active, let capturePeripheralID, capturePeripheralID != p.identifier.uuidString.uppercased() {
+            stopGoogleCapture(); googleInputIssue = "连接的遥控器已变化，已停止原会话；请重新开启接收"
+        }
+        syncGoogleHIDAccess()
+        codec.highFirst = isGoogleRemote   // Google 固件高 nibble 在前
+        p.discoverServices([ATVV])
+    }
+    fileprivate func didDisconnect() {
+        releaseGoogleButtons()
+        if streaming { voiceButton(down: false) }
+        hidReport(usage: 0)
+        remoteConnected = false; handshakeReady = false; streaming = false; micStreaming = false; tx = nil
+        syncGoogleHIDAccess()
+        connectRemote()
+    }
     fileprivate func didServices(_ p: CBPeripheral) {
         if let s = p.services?.first(where: { $0.uuid == ATVV }) { p.discoverCharacteristics([TX,RX,CTL], for: s) }
+        else { L("⚠️ \(p.name ?? "遥控器") 没有 ATVV 语音服务") }
     }
     fileprivate func didChars(_ p: CBPeripheral, _ s: CBService) {
         for ch in s.characteristics ?? [] {
@@ -383,26 +450,61 @@ final class Engine: ObservableObject {
     fileprivate func didNotify(_ p: CBPeripheral, _ ch: CBCharacteristic) {
         if ch.uuid == CTL && ch.isNotifying && !capsSent, let tx = tx {
             capsSent = true
-            p.writeValue(Data([0x0A,0x00,0x06,0x00,0x01]), for: tx, type: .withResponse)
-            handshakeReady = true; L("语音握手完成，随时可用")
+            // ATVV caps 请求；TX 特征只支持无响应写（props=4），用 withResponse 会被静默拒绝
+            let wt: CBCharacteristicWriteType = tx.properties.contains(.write) ? .withResponse : .withoutResponse
+            p.writeValue(Data([0x0A,0x01,0x00,0x00,0x03,0x03]), for: tx, type: wt)
+            L("已发语音能力请求，等待遥控器应答…")
         }
     }
     fileprivate func didValue(_ p: CBPeripheral, _ ch: CBCharacteristic) {
         guard let d = ch.value else { return }
         if ch.uuid == RX {
-            if streaming { ring.push(dsp.process(codec.decode(d))) }
+            guard streaming else { return }
+            // 连续 ADPCM 字节流：攒到 frameSize 切帧；CTL 0x0A 同步在帧边界生效
+            audioBuf.append(d)
+            while audioBuf.count >= frameSize {
+                let frame = audioBuf.prefix(frameSize)
+                audioBuf.removeFirst(frameSize)
+                if let s = pendingSync {
+                    if syncWait == 0 { codec.pred = s.pred; codec.idx = s.idx; pendingSync = nil }
+                    else { syncWait -= 1 }
+                }
+                ring.push(dsp.process(codec.decode(frame)))
+            }
         } else if ch.uuid == CTL, let f = d.first {
-            if f == 0x04 { voiceButton(down: true) }
-            else if f == 0x00 { voiceButton(down: false) }
+            switch f {
+            case 0x0B:   // 能力应答：真握手完成的标志；帧长 d[5]d[6] 大端
+                if d.count >= 7 {
+                    let fs = (Int(d[5]) << 8) | Int(d[6])
+                    if fs > 0 { frameSize = min(fs, 512) }
+                }
+                if !handshakeReady { handshakeReady = true; L("语音握手完成（帧长 \(frameSize)），随时可用") }
+            case 0x08:   // 请求开麦：必须回 0C 00，否则没有音频流
+                if let tx = tx {
+                    let wt: CBCharacteristicWriteType = tx.properties.contains(.write) ? .withResponse : .withoutResponse
+                    p.writeValue(Data([0x0C,0x00]), for: tx, type: wt)
+                }
+            case 0x0A:   // 解码器状态同步：预测器 d[4]d[5] 大端 int16，步长索引 d[6]
+                if d.count >= 7 {
+                    pendingSync = (Int32(Int16(bitPattern: (UInt16(d[4]) << 8) | UInt16(d[5]))), min(88, Int32(d[6])))
+                    syncWait = audioBuf.isEmpty ? 0 : 1
+                }
+            case 0x04: voiceButton(down: true)
+            case 0x00: voiceButton(down: false)
+            default: break
+            }
         }
     }
     private func voiceButton(down: Bool) {
-        let v = config.voice
+        guard down != streaming else { return }
+        if down { voiceTarget = config.voice }
+        let v = voiceTarget ?? config.voice
         // BLE 通道也标记语音键状态：与 HID 报告双保险，谁先到谁立标记，确保原生 F5 被吞
         voiceHidDown = down
         lastHidKeycodeAt[HIDMap.voiceKeycode] = ProcessInfo.processInfo.systemUptime
         if down {
-            codec.reset(); dsp.reset(); streaming = true; micStreaming = config.voiceStartsMic
+            codec.reset(); dsp.reset(); audioBuf.removeAll(); pendingSync = nil; syncWait = 0
+            streaming = true; micStreaming = config.voiceStartsMic
             if v.keycode >= KeyNames.kSpecialBase { startSpecial(v.keycode) }
             else if v.keycode != KeyNames.kNone { postKey(CGKeyCode(v.keycode), down: true, cmd: v.cmd, shift: v.shift, opt: v.opt, ctrl: v.ctrl) }
             L("🎤 语音键按下 → \(v.display)\(config.voiceStartsMic ? " + 麦克风开" : "")")
@@ -411,39 +513,221 @@ final class Engine: ObservableObject {
             if v.keycode >= KeyNames.kSpecialBase { stopSpecial(v.keycode) }
             else if v.keycode != KeyNames.kNone { postKey(CGKeyCode(v.keycode), down: false, cmd: false) }
             L("语音键松开")
+            voiceTarget = nil
         }
     }
 
+    // ---------- Google raw notification input (single-byte reports bypass IOHID) ----------
+    private func setupGoogleCapture() {
+        if let saved = UserDefaults.standard.dictionary(forKey: "GoogleButtonCounts") {
+            for (key, value) in saved { if let key = Int(key), let number = value as? Int { googleButtonCounts[key] = number } }
+        }
+        googleCaptureChanges = googleCapture.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+            Task { @MainActor in self?.syncGoogleHIDAccess() }
+        }
+        googleCapture.onRecord = { [weak self] record in self?.googleRecord(record) }
+        googleWatchdog = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.googleTick() }
+        }
+    }
+    func startGoogleCapture(testOnly: Bool = false) {
+        releaseGoogleButtons(); googleTestMode = testOnly
+        checkPermissions()
+        guard inputMonitoringOK else { googleInputIssue = "请先授予输入监控权限，用于阻止遥控器原生动作重复触发"; return }
+        guard googleHIDDevices.count == 1 else { googleInputIssue = "请唤醒遥控器，并只连接一支 Chromecast Remote 后再开启"; return }
+        let identifier = isGoogleRemote ? dev?.identifier.uuidString : UserDefaults.standard.string(forKey: "GooglePeripheralID")
+        guard let identifier else { L("请先连接 Chromecast Remote，让应用识别该设备"); return }
+        capturePeripheralID = identifier.uppercased()
+        googleCapture.start(peripheralID: identifier)
+        syncGoogleHIDAccess()
+    }
+    func stopGoogleCapture() { releaseGoogleButtons(); googleCapture.stop() }
+    func setGoogleTestMode(_ enabled: Bool) { releaseGoogleButtons(); googleTestMode = enabled }
+    func useGoogleDefaults() {
+        releaseGoogleButtons(); config.installGoogleDefaults(overwrite: true); saveConfig()
+    }
+    func resetGoogleValidation() {
+        googleButtonCounts.removeAll(); UserDefaults.standard.removeObject(forKey: "GoogleButtonCounts")
+    }
+    private func googleRecord(_ record: GoogleCaptureRecord) {
+        switch record.kind {
+        case "buttons":
+            lastGooglePacketAt = ProcessInfo.processInfo.systemUptime
+            for edge in googleState.update(record.buttons) { googleEdge(edge) }
+        case "connected", "disconnected", "stopped", "error":
+            releaseGoogleButtons()
+            if !record.message.isEmpty { L(record.message) }
+        case "ready": L(record.message)
+        default: break
+        }
+    }
+    private func googleEdge(_ edge: GoogleKeyEdge) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let native = GVRMap.usageToKeycode[UInt8(edge.button)] { lastHidKeycodeAt[native] = now }
+        if edge.down {
+            googleButtonCounts[edge.button, default: 0] += 1
+            UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: googleButtonCounts.map { (String($0.key), $0.value) }), forKey: "GoogleButtonCounts")
+            lastButtonUsage = edge.button
+            let mapping = config.buttons.first(where: { $0.usage == edge.button })
+            lastButton = mapping?.name ?? "Google \(edge.button)"
+            L("Google [\(lastButton)] 按下\(googleTestMode ? "（检测）" : " → \(mapping?.display ?? "未配置")")")
+            guard !googleTestMode, capturingUsage == nil, axTrusted, !googleSeized.isEmpty,
+                  let mapping, mapping.keycode != KeyNames.kNone else { return }
+            let alreadyDown = googleTargets.values.contains(where: { $0.actionID == mapping.actionID })
+            googleTargets[edge.button] = mapping
+            googleRepeatAt[edge.button] = now + 0.5
+            if !alreadyDown { sendMapping(mapping, down: true) }
+        } else {
+            googleRepeatAt.removeValue(forKey: edge.button)
+            guard let mapping = googleTargets.removeValue(forKey: edge.button) else { return }
+            if !googleTargets.values.contains(where: { $0.actionID == mapping.actionID }) { sendMapping(mapping, down: false) }
+        }
+    }
+    private func sendMapping(_ mapping: ButtonMapping, down: Bool, repeatKey: Bool = false) {
+        if mapping.keycode >= KeyNames.kSpecialBase {
+            if down { startSpecial(mapping.keycode) } else { stopSpecial(mapping.keycode) }
+        } else if mapping.keycode != KeyNames.kNone {
+            postKey(CGKeyCode(mapping.keycode), down: down, cmd: mapping.cmd, shift: mapping.shift, opt: mapping.opt, ctrl: mapping.ctrl, autorepeat: repeatKey)
+        }
+    }
+    private func releaseGoogleButtons() {
+        _ = googleState.releaseAll()
+        let unique = Dictionary(googleTargets.values.map { ($0.actionID, $0) }, uniquingKeysWith: { a, _ in a })
+        googleTargets.removeAll(); googleRepeatAt.removeAll()
+        for mapping in unique.values { sendMapping(mapping, down: false) }
+    }
+    private func googleTick() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if !googleState.held.isEmpty && now - lastGooglePacketAt > 8 {
+            releaseGoogleButtons(); L("Google 缺失松开保护：已释放所有按键（单次按住上限 8 秒）")
+        }
+        var repeated: Set<String> = []
+        for (button, mapping) in googleTargets where mapping.keycode < KeyNames.kSpecialBase {
+            guard now >= (googleRepeatAt[button] ?? .infinity), !repeated.contains(mapping.actionID) else { continue }
+            // Modifier-only actions should remain held, never generate fake repeat edges.
+            guard ![0x36,0x37,0x38,0x3C,0x3A,0x3D,0x3B,0x3E,0x39,0x3F].contains(mapping.keycode) else { continue }
+            sendMapping(mapping, down: true, repeatKey: true); repeated.insert(mapping.actionID)
+            googleRepeatAt[button] = now + 0.08
+        }
+    }
+    func shutdown() {
+        stopGoogleCapture()
+        if streaming { voiceButton(down: false) }
+        hidReport(usage: 0)
+        googleWatchdog?.invalidate(); googleWatchdog = nil
+    }
+
     // ---------- HID reading ----------
-    private func setupHID() {
-        let mgr = IOHIDManagerCreate(kCFAllocatorDefault, 0)
-        IOHIDManagerSetDeviceMatching(mgr, [kIOHIDVendorIDKey: 0x2717] as CFDictionary)
-        IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
-        _ = IOHIDManagerOpen(mgr, 0)
-        if let set = IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice> {
-            inputMonitoringOK = !set.isEmpty
-            for dvc in set {
-                let rsize = (IOHIDDeviceGetProperty(dvc, kIOHIDMaxInputReportSizeKey as CFString) as? Int) ?? 64
-                _ = IOHIDDeviceOpen(dvc, IOHIDOptionsType(kIOHIDOptionsTypeNone))
-                let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: max(rsize,8)); hidBufs.append(buf)
-                let ctx = Unmanaged.passUnretained(self).toOpaque()
-                IOHIDDeviceRegisterInputReportCallback(dvc, buf, max(rsize,8), { context, _, _, _, _, report, len in
-                    guard let context = context, len >= 4 else { return }
-                    let me = Unmanaged<Engine>.fromOpaque(context).takeUnretainedValue()
-                    let usage = report[3]
-                    // 回调本就在主运行循环上，必须同步处理：
-                    // 若 async 延后一拍，系统生成的原生键事件会抢先到达拦截器，抑制标记来不及生效
-                    MainActor.assumeIsolated { me.hidReport(usage: usage) }
-                }, ctx)
-                IOHIDDeviceScheduleWithRunLoop(dvc, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
+    // 此分支只匹配 Google（Chromecast Remote）厂商
+    private static let remoteVendors: Set<Int> = [0x18D1]
+    private var openedHIDs: Set<Int> = []   // 已注册报告回调的设备 UniqueID（可达 UInt32 上限以上，用 Int）
+
+    private func syncGoogleHIDAccess() {
+        let exclusive = GoogleCapturePolicy.shouldSeize(active: googleCapture.active,
+            deviceCount: googleHIDDevices.count, connected: remoteConnected && isGoogleRemote,
+            currentID: dev?.identifier.uuidString, sessionID: capturePeripheralID)
+        if !exclusive { releaseGoogleButtons() }
+        for (id, device) in googleHIDDevices {
+            if exclusive && !googleSeized.contains(id) {
+                IOHIDDeviceClose(device, 0)
+                let result = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+                if result == kIOReturnSuccess {
+                    googleSeized.insert(id); googleInputIssue = ""
+                    L("Google 原生按键已独占接收，避免系统动作与映射双发")
+                } else {
+                    _ = IOHIDDeviceOpen(device, 0)
+                    googleInputIssue = "无法取得独占输入（\(result)），映射已暂停；请检查输入监控权限或其他遥控器软件"
+                    releaseGoogleButtons()
+                }
+            } else if !exclusive && googleSeized.contains(id) {
+                IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+                _ = IOHIDDeviceOpen(device, 0); googleSeized.remove(id)
+                L("Google 原生按键接收已释放")
             }
         }
+        if googleCapture.active && googleHIDDevices.count != 1 {
+            googleInputIssue = "遥控器未就绪或连接了多支同款设备，映射已暂停"
+        }
+    }
+
+    private func setupHID() {
+        let mgr = IOHIDManagerCreate(kCFAllocatorDefault, 0)
+        // 匹配字典内多键是 AND、单值无法表达多厂商 OR，故按 Consumer(0x0C) usage page 匹配后逐设备过滤厂商
+        IOHIDManagerSetDeviceMatching(mgr, [kIOHIDDeviceUsagePageKey as String: 0x0C] as CFDictionary)
+        IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
+        _ = IOHIDManagerOpen(mgr, 0)
+        // BLE 遥控器休眠唤醒/重连后设备会以新实例出现，必须监听设备到达再补注册回调
+        let mctx = Unmanaged.passUnretained(self).toOpaque()
+        IOHIDManagerRegisterDeviceMatchingCallback(mgr, { context, _, _, dvc in
+            guard let context else { return }
+            let me = Unmanaged<Engine>.fromOpaque(context).takeUnretainedValue()
+            MainActor.assumeIsolated { me.openHIDDevice(dvc) }
+        }, mctx)
+        IOHIDManagerRegisterDeviceRemovalCallback(mgr, { context, _, _, device in
+            guard let context else { return }
+            let me = Unmanaged<Engine>.fromOpaque(context).takeUnretainedValue()
+            let id = (IOHIDDeviceGetProperty(device, kIOHIDUniqueIDKey as CFString) as? NSNumber)?.intValue ?? -1
+            MainActor.assumeIsolated {
+                if me.googleHIDDevices.removeValue(forKey: id) != nil {
+                    me.googleSeized.remove(id); me.releaseGoogleButtons()
+                    me.googleInputIssue = "遥控器已断开，等待唤醒重连"
+                }
+                me.openedHIDs.remove(id)
+                me.syncGoogleHIDAccess()
+            }
+        }, mctx)
+        if let set = IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice> {
+            for dvc in set { openHIDDevice(dvc) }
+        }
         hidMgr = mgr
+    }
+
+    private func openHIDDevice(_ dvc: IOHIDDevice) {
+        let vid = (IOHIDDeviceGetProperty(dvc, kIOHIDVendorIDKey as CFString) as? Int) ?? -1
+        guard Self.remoteVendors.contains(vid) else { return }
+        if vid == 0x18D1 {
+            let pid = (IOHIDDeviceGetProperty(dvc, kIOHIDProductIDKey as CFString) as? Int) ?? -1
+            guard pid == 0x9450 else { return }
+        }
+        let uid = (IOHIDDeviceGetProperty(dvc, kIOHIDUniqueIDKey as CFString) as? NSNumber)?.intValue ?? -1
+        guard uid >= 0, !openedHIDs.contains(uid) else { return }
+        openedHIDs.insert(uid)
+        L("HID 遥控器: \((IOHIDDeviceGetProperty(dvc, kIOHIDProductKey as CFString) as? String) ?? "未知") (vid 0x\(String(vid, radix: 16)))")
+        let rsize = (IOHIDDeviceGetProperty(dvc, kIOHIDMaxInputReportSizeKey as CFString) as? Int) ?? 64
+        _ = IOHIDDeviceOpen(dvc, IOHIDOptionsType(kIOHIDOptionsTypeNone))
+        if vid == 0x18D1 { googleHIDDevices[uid] = dvc }
+        let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: max(rsize,8)); hidBufs.append(buf)
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        IOHIDDeviceRegisterInputReportCallback(dvc, buf, max(rsize,8), { context, _, _, _, _, report, len in
+            guard let context = context, len >= 2 else { return }
+            let me = Unmanaged<Engine>.fromOpaque(context).takeUnretainedValue()
+            // 回调本就在主运行循环上，必须同步处理：
+            // 若 async 延后一拍，系统生成的原生键事件会抢先到达拦截器，抑制标记来不及生效
+            if len == 3 && report[0] == 0x01 {
+                // Never inject from this partial IOHID path: short single-key/releases are absent.
+                // Only mark native-key suppression early for valid full chord reports.
+                let slots = [report[1], report[2]]
+                MainActor.assumeIsolated {
+                    if me.googleCapture.active {
+                        for index in slots {
+                            if let key = GVRMap.usageToKeycode[index] { me.lastHidKeycodeAt[key] = ProcessInfo.processInfo.systemUptime }
+                        }
+                    }
+                }
+            } else if len >= 4 {
+                // 小米遥控器：usage 在第 4 字节
+                MainActor.assumeIsolated { me.hidReport(usage: report[3]) }
+            }
+        }, ctx)
+        IOHIDDeviceScheduleWithRunLoop(dvc, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
+        if vid == 0x18D1 { syncGoogleHIDAccess() }
     }
 
     private func hidReport(usage: UInt8) {
         let now = ProcessInfo.processInfo.systemUptime
         if usage == 0x00 {
+            _ = legacyFilter.accept(0)
             // release: send keyUp for the held mapped target, if any
             if voiceHidDown { voiceHidDown = false; lastHidKeycodeAt[HIDMap.voiceKeycode] = now }
             if let t = downTarget {
@@ -454,16 +738,21 @@ final class Engine: ObservableObject {
             return
         }
         if usage == HIDMap.voiceUsage {
-            // 语音键的原生 F5：吞掉（BLE 通道已负责发所录制的键），避免触发系统听写
+            // 语音键的原生报告：吞掉（BLE 通道已负责发所录制的键），避免触发系统听写
             voiceHidDown = true
             lastHidKeycodeAt[HIDMap.voiceKeycode] = now
             return
+        }
+        guard legacyFilter.accept(usage) else { return }
+        if let old = downTarget {
+            sendMapping(old, down: false)
+            downTarget = nil; downButtonUsage = 0
         }
         // a button is pressed
         lastButtonUsage = Int(usage)
         lastButton = String(format: "0x%02x", usage)
         // mark for suppression if macOS will also generate a keycode
-        if let kc = HIDMap.usageToKeycode[usage] { lastHidKeycodeAt[kc] = now }
+        if let kc = GVRMap.usageToKeycode[usage] ?? HIDMap.usageToKeycode[usage] { lastHidKeycodeAt[kc] = now }
         // find mapping
         guard let m = config.buttons.first(where: { $0.usage == Int(usage) }) else {
             L(String(format: "按键 0x%02x 未在映射表中（保持原样）", usage))
@@ -512,6 +801,9 @@ final class Engine: ObservableObject {
         // suppress if the remote produced this keycode within the last 120ms AND that button is mapped to something other than "keep original"
         var suppress = false
         MainActor.assumeIsolated {
+            // Google native events are blocked at the target device by IOHID seize.
+            // Never time-window suppress unrelated physical keyboard events for Google.
+            if isGoogleRemote { return }
             let now = ProcessInfo.processInfo.systemUptime
             // 语音键的 F5：按住期间全部吞掉（含自动重复），松开后 120ms 内吞掉 keyUp
             if kc == HIDMap.voiceKeycode {
@@ -521,7 +813,8 @@ final class Engine: ObservableObject {
             }
             if let ts = lastHidKeycodeAt[kc], now - ts < 0.12 {
                 // find which usage produced this keycode
-                if let usage = HIDMap.usageToKeycode.first(where: { $0.value == kc })?.key,
+                let table = isGoogleRemote ? GVRMap.usageToKeycode : HIDMap.usageToKeycode
+                if let usage = table.first(where: { $0.value == kc })?.key,
                    let m = config.buttons.first(where: { $0.usage == Int(usage) }),
                    m.keycode != KeyNames.kNone {
                     suppress = true
@@ -533,8 +826,9 @@ final class Engine: ObservableObject {
 
     // ---------- 特殊动作：鼠标移动/点击/滚轮 ----------
     private var specialTimer: Timer?
-    private var specialCode = 0
     private var mouseSpeed: CGFloat = 0
+    private var activeSpecials: [Int: Int] = [:]
+    private var mediaRepeatAt: [Int: TimeInterval] = [:]
 
     func setSpecial(usage: Int, keycode: Int) {
         if usage == -1 {
@@ -548,33 +842,62 @@ final class Engine: ObservableObject {
     }
 
     private func startSpecial(_ code: Int) {
+        activeSpecials[code, default: 0] += 1
+        guard activeSpecials[code] == 1 else { return }
         switch code {
         case KeyNames.kMouseClick:  postMouse(.leftMouseDown, .left)
         case KeyNames.kMouseRClick: postMouse(.rightMouseDown, .right)
+        case KeyNames.kVolumeUp, KeyNames.kVolumeDown, KeyNames.kMute, KeyNames.kPlayPause:
+            postMedia(code)
+            mediaRepeatAt[code] = ProcessInfo.processInfo.systemUptime + 0.5
         default:
-            specialCode = code; mouseSpeed = 4
-            specialTimer?.invalidate()
+            mouseSpeed = 4
+        }
+        if specialTimer == nil {
             specialTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.specialTick() }
             }
         }
     }
     private func stopSpecial(_ code: Int) {
+        guard let count = activeSpecials[code] else { return }
+        if count > 1 { activeSpecials[code] = count - 1; return }
+        activeSpecials.removeValue(forKey: code); mediaRepeatAt.removeValue(forKey: code)
         switch code {
         case KeyNames.kMouseClick:  postMouse(.leftMouseUp, .left)
         case KeyNames.kMouseRClick: postMouse(.rightMouseUp, .right)
-        default: specialTimer?.invalidate(); specialTimer = nil
+        default: break
         }
+        if activeSpecials.isEmpty { specialTimer?.invalidate(); specialTimer = nil }
     }
     private func specialTick() {
-        switch specialCode {
-        case KeyNames.kMouseUp:    moveMouse(0, -1)
-        case KeyNames.kMouseDown:  moveMouse(0, 1)
-        case KeyNames.kMouseLeft:  moveMouse(-1, 0)
-        case KeyNames.kMouseRight: moveMouse(1, 0)
-        case KeyNames.kScrollUp:   postScroll(2)
-        case KeyNames.kScrollDown: postScroll(-2)
-        default: break
+        let dx: CGFloat = (activeSpecials[KeyNames.kMouseRight] != nil ? 1 : 0) - (activeSpecials[KeyNames.kMouseLeft] != nil ? 1 : 0)
+        let dy: CGFloat = (activeSpecials[KeyNames.kMouseDown] != nil ? 1 : 0) - (activeSpecials[KeyNames.kMouseUp] != nil ? 1 : 0)
+        if dx != 0 || dy != 0 { moveMouse(dx, dy) }
+        if activeSpecials[KeyNames.kScrollUp] != nil { postScroll(2) }
+        if activeSpecials[KeyNames.kScrollDown] != nil { postScroll(-2) }
+        let now = ProcessInfo.processInfo.systemUptime
+        for code in [KeyNames.kVolumeUp, KeyNames.kVolumeDown] where activeSpecials[code] != nil {
+            if now >= (mediaRepeatAt[code] ?? .infinity) { postMedia(code); mediaRepeatAt[code] = now + 0.12 }
+        }
+    }
+    private func postMedia(_ code: Int) {
+        let key: Int
+        switch code {
+        case KeyNames.kVolumeUp: key = 0
+        case KeyNames.kVolumeDown: key = 1
+        case KeyNames.kMute: key = 7
+        case KeyNames.kPlayPause: key = 16
+        default: return
+        }
+        for state in [0xA, 0xB] {
+            if let event = NSEvent.otherEvent(with: .systemDefined, location: .zero,
+                modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(state << 8)), timestamp: 0,
+                windowNumber: 0, context: nil, subtype: 8,
+                data1: (key << 16) | (state << 8), data2: -1)?.cgEvent {
+                event.setIntegerValueField(.eventSourceUserData, value: kSyntheticMarker)
+                event.post(tap: .cghidEventTap)
+            }
         }
     }
     private func moveMouse(_ dx: CGFloat, _ dy: CGFloat) {
@@ -591,7 +914,10 @@ final class Engine: ObservableObject {
             np.x = min(max(np.x, d.minX), d.maxX - 1)
             np.y = min(max(np.y, d.minY), d.maxY - 1)
         }
-        if let e = CGEvent(mouseEventSource: evSrc, mouseType: .mouseMoved, mouseCursorPosition: np, mouseButton: .left) {
+        let draggingLeft = activeSpecials[KeyNames.kMouseClick] != nil
+        let draggingRight = activeSpecials[KeyNames.kMouseRClick] != nil
+        let type: CGEventType = draggingLeft ? .leftMouseDragged : (draggingRight ? .rightMouseDragged : .mouseMoved)
+        if let e = CGEvent(mouseEventSource: evSrc, mouseType: type, mouseCursorPosition: np, mouseButton: draggingRight && !draggingLeft ? .right : .left) {
             e.setIntegerValueField(.eventSourceUserData, value: kSyntheticMarker)
             e.post(tap: .cghidEventTap)
         }
@@ -612,7 +938,7 @@ final class Engine: ObservableObject {
 
     // ---------- synthesize keys ----------
     private let evSrc = CGEventSource(stateID: .hidSystemState)
-    func postKey(_ code: CGKeyCode, down: Bool, cmd: Bool, shift: Bool = false, opt: Bool = false, ctrl: Bool = false) {
+    func postKey(_ code: CGKeyCode, down: Bool, cmd: Bool, shift: Bool = false, opt: Bool = false, ctrl: Bool = false, autorepeat: Bool = false) {
         guard let e = CGEvent(keyboardEventSource: evSrc, virtualKey: code, keyDown: down) else { return }
         var flags: CGEventFlags = []
         if down {
@@ -622,6 +948,7 @@ final class Engine: ObservableObject {
             if ctrl { flags.insert(.maskControl) }
         }
         e.flags = flags
+        if autorepeat { e.setIntegerValueField(.keyboardEventAutorepeat, value: 1) }
         e.setIntegerValueField(.eventSourceUserData, value: kSyntheticMarker)
         e.post(tap: .cghidEventTap)
     }
@@ -634,6 +961,7 @@ final class BTProxy: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManagerDidUpdateState(_ c: CBCentralManager) { Task { @MainActor in e?.btStateChanged(c) } }
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) { Task { @MainActor in e?.didConnect(p) } }
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) { Task { @MainActor in e?.didDisconnect() } }
+    func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) { Task { @MainActor in e?.didFailConnect(p, error) } }
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) { Task { @MainActor in e?.didServices(p) } }
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) { Task { @MainActor in e?.didChars(p, s) } }
     func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor ch: CBCharacteristic, error: Error?) { Task { @MainActor in e?.didNotify(p, ch) } }

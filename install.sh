@@ -27,9 +27,15 @@ fi
 
 echo "== 4/4 编译并安装 App =="
 ./build.sh
-DEST="/Applications/MiRemote Mapper.app"
-rm -rf "$DEST"
-cp -R "build/MiRemote Mapper.app" "$DEST"
+DEST="/Applications/Google Remote Voice.app"
+if pgrep -f '^/Applications/Google Remote Voice.app/Contents/MacOS/GoogleRemoteVoice($| )' >/dev/null; then
+  echo "请先退出 Google Remote Voice，等待按键接收器恢复日志设置，再重跑安装。"
+  exit 1
+fi
+if [ -d "$DEST" ]; then
+  mv "$DEST" "build/installed-backup-$(date +%Y%m%d-%H%M%S).app"
+fi
+cp -R "build/Google Remote Voice.app" "$DEST"
 xattr -cr "$DEST" 2>/dev/null || true
 
 cat <<'EOF'
@@ -39,7 +45,7 @@ cat <<'EOF'
 接下来：
   1. 若刚装了 BlackHole，请【重启电脑】。
   2. 在系统蓝牙里，把 Android TV 语音遥控器和这台 Mac 配对连接。
-  3. 打开“应用程序 → MiRemote Mapper”（首次右键→打开）。
+  3. 打开“应用程序 → Google Remote Voice”（首次右键→打开）。
   4. 点菜单栏图标 → 设置，按提示授权：蓝牙 / 辅助功能 / 输入监控。
   5. 要让某个 App 用遥控器麦克风：把它的输入设备选成 “BlackHole 2ch”。
 EOF

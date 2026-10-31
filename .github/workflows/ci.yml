@@ -1,0 +1,15 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test-and-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Pure tests (no Bluetooth capture or administrator access)
+        run: sh scripts/run-tests.sh
+      - name: Build and verify app signature
+        run: ./build.sh

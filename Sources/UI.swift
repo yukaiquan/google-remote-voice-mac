@@ -15,12 +15,13 @@ struct StatusView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("小米遥控器映射").font(.headline)
+            Text("Google Remote Voice").font(.headline)
             VStack(alignment: .leading, spacing: 7) {
                 row("蓝牙", e.btOn)
                 row("遥控器连接", e.remoteConnected)
                 row("语音通道就绪", e.handshakeReady)
                 row("BlackHole 声卡", e.blackholeFound)
+                row("谷歌按键接收", e.googleCapture.ready)
                 if e.micStreaming {
                     HStack(spacing: 8) { StatusDot(ok: true); Text("🎤 正在采集语音").foregroundColor(.green) }
                 }
@@ -51,12 +52,14 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("小米遥控器 · 按键映射与语音麦克风")
+                Text("Google Remote Voice · 语音输入与按键映射")
                     .font(.title2).bold()
 
                 permissions
                 Divider()
                 connection
+                Divider()
+                googleReceiver
                 Divider()
                 voiceRow
                 Divider()
@@ -67,9 +70,38 @@ struct ContentView: View {
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 560, minHeight: 640)
+        .frame(minWidth: 740, minHeight: 640)
         .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
             e.checkPermissions()
+        }
+    }
+
+    var googleReceiver: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Google 遥控器按键接收").font(.headline)
+            HStack {
+                StatusDot(ok: e.googleCapture.ready)
+                Text(e.googleCapture.status).font(.callout)
+                Spacer()
+                if e.googleCapture.active {
+                    Button("停止并恢复设置") { e.stopGoogleCapture() }
+                } else {
+                    Button("开启按键接收") { e.startGoogleCapture(testOnly: e.googleTestMode) }
+                    Button("选择工具…") { e.googleCapture.selectPacketLogger() }
+                }
+            }
+            if !e.googleInputIssue.isEmpty { Text(e.googleInputIssue).font(.caption).foregroundColor(.orange) }
+            Toggle("按键检测模式（只登记按键，不执行映射）", isOn: Binding(
+                get: { e.googleTestMode }, set: { e.setGoogleTestMode($0) }))
+            HStack {
+                Text("实体按键已收到：\(GVRMap.physicalUsages.filter { (e.googleButtonCounts[$0] ?? 0) > 0 }.count)/\(GVRMap.physicalUsages.count)")
+                    .font(.caption).foregroundColor(.secondary)
+                Button("重置检测记录") { e.resetGoogleValidation() }.font(.caption)
+            }
+            Text("开启时需要管理员授权；只保留遥控器按键事件，停止或退出会恢复原蓝牙日志设置。语音仍走独立通道。")
+                .font(.caption).foregroundColor(.secondary)
+            Text("首次使用建议打开检测模式，依次按完所有键；然后关闭检测模式即可使用映射。")
+                .font(.caption).foregroundColor(.secondary)
         }
     }
 
@@ -104,7 +136,7 @@ struct ContentView: View {
     var connection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("遥控器连接").font(.headline)
-            HStack { StatusDot(ok: e.remoteConnected); Text(e.remoteConnected ? "已连接：小米蓝牙语音遥控器" : "未连接（请在系统蓝牙里配对连接遥控器）") }
+            HStack { StatusDot(ok: e.remoteConnected); Text(e.remoteConnected ? "已连接：\(e.remoteName.isEmpty ? "语音遥控器" : e.remoteName)" : "未连接（请在系统蓝牙里配对连接遥控器）") }
             HStack { StatusDot(ok: e.handshakeReady); Text(e.handshakeReady ? "语音通道就绪" : "语音通道未就绪") }
             if e.micStreaming { HStack { StatusDot(ok: true); Text("🎤 正在采集语音 → BlackHole").foregroundColor(.green) } }
         }
@@ -115,8 +147,11 @@ struct ContentView: View {
         let capturing = (e.capturingUsage == usage)
         return HStack(spacing: 10) {
             Text(name).frame(width: 110, alignment: .leading)
-            if usage >= 0 {
-                Text(String(format:"0x%02x", usage)).font(.caption).foregroundColor(.secondary).frame(width: 44)
+            if usage >= 1 && usage <= 17 {
+                Text((e.googleButtonCounts[usage] ?? 0) > 0 ? "✓ \(e.googleButtonCounts[usage] ?? 0)" : "未收到")
+                    .font(.caption).foregroundColor((e.googleButtonCounts[usage] ?? 0) > 0 ? .green : .secondary).frame(width: 48)
+            } else if usage >= 0 {
+                Text("原键").font(.caption).foregroundColor(.secondary).frame(width: 48)
             } else {
                 Text("语音").font(.caption).foregroundColor(.secondary).frame(width: 44)
             }
@@ -131,7 +166,7 @@ struct ContentView: View {
                 Button("取消") { e.cancelCapture() }
             } else {
                 Button("录制") { e.beginCapture(usage: usage) }
-                Menu("鼠标/滚轮") {
+                Menu("动作") {
                     ForEach(KeyNames.specials, id: \.code) { sp in
                         Button(sp.name) { e.setSpecial(usage: usage, keycode: sp.code) }
                     }
@@ -159,8 +194,22 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("按键映射").font(.headline)
             Text("点「录制」后在 Mac 键盘上按目标键（支持组合键/修饰键）。").font(.caption).foregroundColor(.secondary)
-            ForEach(e.config.buttons) { b in
+            Group {
+                HStack {
+                    Text("电源/YouTube/Netflix 默认 F12/F9/F10，可按需要录制。音量键默认控制系统音量。")
+                        .font(.caption).foregroundColor(.secondary)
+                    Button("恢复谷歌默认映射") { e.useGoogleDefaults() }
+                }
+            }
+            ForEach(e.config.buttons.filter { GVRMap.physicalUsages.contains($0.usage) }) { b in
                 mappingRow(usage: b.usage, name: b.name, display: b.display)
+            }
+            Group {
+                DisclosureGroup("扩展按键（仅部分型号有）") {
+                    ForEach(e.config.buttons.filter { (1...17).contains($0.usage) && !GVRMap.physicalUsages.contains($0.usage) }) { b in
+                        mappingRow(usage: b.usage, name: b.name, display: b.display)
+                    }
+                }
             }
         }
     }

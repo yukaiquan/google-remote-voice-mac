@@ -12,6 +12,7 @@ DerivedData/
 *.certSigningRequest
 *.keychain
 *.keychain-db
+.local-signing-identity
 
 # user config (runtime, per-machine)
 config.json
@@ -19,3 +20,13 @@ config.json
 # macOS junk
 .DS_Store
 ._*
+
+# local diagnostics and vendor downloads
+*.pklg
+*.wav
+*.pcm
+*.dmg
+*.mobileconfig
+*.log
+__pycache__/
+*.pyc

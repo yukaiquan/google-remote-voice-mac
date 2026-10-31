@@ -1,16 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleExecutable</key><string>MiRemote</string>
-  <key>CFBundleIdentifier</key><string>com.miremote.mapper</string>
-  <key>CFBundleName</key><string>MiRemote Mapper</string>
-  <key>CFBundleDisplayName</key><string>小米遥控器映射</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <key>LSUIElement</key><true/>
-  <key>NSBluetoothAlwaysUsageDescription</key><string>连接遥控器读取语音与按键 / Connect the remote to read voice and buttons</string>
-  <key>NSInputMonitoringUsageDescription</key><string>读取遥控器按键以进行映射 / Read remote buttons for remapping</string>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>GoogleRemoteVoice</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.zolo1978.googleremotevoice</string>
+	<key>CFBundleName</key>
+	<string>Google Remote Voice</string>
+	<key>CFBundleDisplayName</key>
+	<string>Google Remote Voice</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>经管理员授权按需启停谷歌遥控器按键接收，退出时恢复日志设置。</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>连接遥控器读取语音与按键 / Connect the remote to read voice and buttons</string>
+	<key>NSInputMonitoringUsageDescription</key>
+	<string>读取遥控器按键以进行映射 / Read remote buttons for remapping</string>
+</dict>
+</plist>

@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         popover.animates = false
-        popover.contentSize = NSSize(width: 260, height: 250)
+        popover.contentSize = NSSize(width: 260, height: 280)
         let host = NSHostingController(
             rootView: StatusView(e: engine,
                                   onSettings: { [weak self] in self?.openSettings() },
@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let b = statusItem.button {
             let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-            b.image = NSImage(systemSymbolName: "mic.circle.fill", accessibilityDescription: "小米遥控器映射")?
+            b.image = NSImage(systemSymbolName: "mic.circle.fill", accessibilityDescription: "Google Remote Voice")?
                 .withSymbolConfiguration(cfg)
             b.image?.isTemplate = true
             b.imagePosition = .imageOnly
@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             b.target = self
             b.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        if CommandLine.arguments.contains("--settings") || !engine.axTrusted || !engine.inputMonitoringOK { openSettings() }
     }
 
     @objc func iconClicked(_ sender: Any?) {
@@ -63,10 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.performClose(nil)
         if settingsWindow == nil {
             let win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 600, height: 680),
+                contentRect: NSRect(x: 0, y: 0, width: 780, height: 800),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered, defer: false)
-            win.title = "小米遥控器映射 · 设置"
+            win.title = "Google Remote Voice · 设置"
             win.center()
             win.isReleasedWhenClosed = false
             win.contentView = NSHostingView(rootView: ContentView(e: engine))
@@ -77,6 +78,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func quit() { NSApp.terminate(nil) }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let wasActive = engine.googleCapture.active
+        engine.shutdown()
+        guard wasActive else { return .terminateNow }
+        let deadline = Date().addingTimeInterval(8)
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+            Task { @MainActor in
+                if self?.engine.googleCapture.active != true || Date() >= deadline {
+                    timer.invalidate(); sender.reply(toApplicationShouldTerminate: true)
+                }
+            }
+        }
+        return .terminateLater
+    }
 }
 
 MainActor.assumeIsolated {
