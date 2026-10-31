@@ -9,4 +9,8 @@ swiftc "$TASK_ROOT/Sources/Model.swift" "$TASK_ROOT/Tests/GoogleModelTests.swift
 "$TASK_TEST_DIR/model"
 swiftc "$TASK_ROOT/Sources/VoiceAudioCore.swift" "$TASK_ROOT/Sources/GoogleVoiceLink.swift" "$TASK_ROOT/Tests/VoiceAudioTests.swift" -o "$TASK_TEST_DIR/audio"
 "$TASK_TEST_DIR/audio"
+swiftc "$TASK_ROOT/Sources/VoiceSession.swift" "$TASK_ROOT/Tests/VoiceSessionTests.swift" -o "$TASK_TEST_DIR/session"
+"$TASK_TEST_DIR/session"
+swiftc "$TASK_ROOT/Sources/CaptureStartup.swift" "$TASK_ROOT/Tests/CaptureStartupTests.swift" -o "$TASK_TEST_DIR/startup"
+"$TASK_TEST_DIR/startup"
 python3 -m unittest discover -s "$TASK_ROOT/scripts" -p test_chromecast_packet_events.py

@@ -92,6 +92,8 @@ struct ContentView: View {
                 }
             }
             if !e.googleInputIssue.isEmpty { Text(e.googleInputIssue).font(.caption).foregroundColor(.orange) }
+            Toggle("应用启动后自动开启按键接收", isOn: Binding(
+                get: { e.config.effectiveAutoStartGoogleCapture }, set: { e.setAutoStartGoogleCapture($0) }))
             Toggle("按键检测模式（只登记按键，不执行映射）", isOn: Binding(
                 get: { e.googleTestMode }, set: { e.setGoogleTestMode($0) }))
             HStack {

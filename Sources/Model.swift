@@ -117,6 +117,8 @@ struct Config: Codable {
     var buttons: [ButtonMapping]
     var voice: ButtonMapping       // usage = -1
     var voiceStartsMic: Bool
+    var autoStartGoogleCapture: Bool? = nil
+    var effectiveAutoStartGoogleCapture: Bool { autoStartGoogleCapture ?? true }
     var voiceGainDB: Double? = nil
     var effectiveVoiceGainDB: Double {
         let value = voiceGainDB ?? 18

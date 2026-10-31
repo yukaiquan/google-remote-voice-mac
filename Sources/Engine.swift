@@ -39,6 +39,9 @@ final class Engine: ObservableObject {
     private var frameSize = 160
     private var pendingSync: (pred: Int32, idx: Int32)?
     private var syncWait = 0
+    private var voiceSession = VoiceSession()
+    private var captureStartup = CaptureStartup()
+    private var voiceStartedAt = 0.0
     private var voiceRXCount = 0
     private var voiceRXBegan = 0.0
     private var voiceRXEnded = 0.0
@@ -126,6 +129,7 @@ final class Engine: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 self.audioWatchdog()
+                self.maybeAutoStartGoogleCapture()
                 if self.tap == nil, AXIsProcessTrusted() {
                     self.installTap()
                     if self.tap != nil { self.L("辅助功能已授权，事件拦截已启用") }
@@ -242,9 +246,12 @@ final class Engine: ObservableObject {
     }
 
     func checkPermissions() {
-        axTrusted = AXIsProcessTrusted()
-        blackholeFound = (Self.deviceID(named: "BlackHole") != nil)
-        inputMonitoringOK = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted)
+        let ax = AXIsProcessTrusted()
+        let bh = Self.deviceID(named: "BlackHole") != nil
+        let im = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+        if axTrusted != ax { axTrusted = ax }
+        if blackholeFound != bh { blackholeFound = bh }
+        if inputMonitoringOK != im { inputMonitoringOK = im }
     }
     func requestAX() {
         _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
@@ -375,6 +382,7 @@ final class Engine: ObservableObject {
         p.discoverServices([ATVV])
     }
     fileprivate func didDisconnect() {
+        voiceSession.stop()
         releaseGoogleButtons()
         if streaming { voiceButton(down: false) }
         hidReport(usage: 0)
@@ -427,6 +435,7 @@ final class Engine: ObservableObject {
                 }
                 if !handshakeReady { handshakeReady = true; L("语音握手完成（帧长 \(frameSize)），随时可用") }
             case 0x08:   // 请求开麦：必须回 0C 00，否则没有音频流
+                if isGoogleRemote, let cm { _ = GoogleVoiceLink.request(central: cm, peripheral: p, lowLatency: true) }
                 if let tx = tx {
                     let wt: CBCharacteristicWriteType = tx.properties.contains(.write) ? .withResponse : .withoutResponse
                     p.writeValue(Data([0x0C,0x00]), for: tx, type: wt)
@@ -436,8 +445,20 @@ final class Engine: ObservableObject {
                     pendingSync = (Int32(Int16(bitPattern: (UInt16(d[4]) << 8) | UInt16(d[5]))), min(88, Int32(d[6])))
                     syncWait = audioBuf.isEmpty ? 0 : 1
                 }
-            case 0x04: voiceButton(down: true)
-            case 0x00: voiceButton(down: false)
+            case 0x04:
+                if isGoogleRemote {
+                    if let cm { _ = GoogleVoiceLink.request(central: cm, peripheral: p, lowLatency: true) }
+                    _ = voiceSession.begin(d, at: ProcessInfo.processInfo.systemUptime)
+                    if voiceSession.streamID == nil { L("⚠️ 缺少有效语音会话信息，无法启用长录音保活") }
+                }
+                voiceButton(down: true)
+            case 0x00:
+                if d.count >= 2 { L(String(format: "遥控器结束语音（原因 0x%02X）", d[1])) }
+                voiceButton(down: false)
+            case 0x0C:
+                if d.count >= 3 {
+                    L(String(format: "⚠️ 遥控器语音命令被拒绝（0x%02X%02X）", d[1], d[2]))
+                }
             default: break
             }
         }
@@ -450,6 +471,7 @@ final class Engine: ObservableObject {
         voiceHidDown = down
         lastHidKeycodeAt[HIDMap.voiceKeycode] = ProcessInfo.processInfo.systemUptime
         if down {
+            voiceStartedAt = ProcessInfo.processInfo.systemUptime
             voiceRXCount = 0; voiceRXBegan = 0; voiceRXEnded = 0
             codec.reset(); dsp.reset(); applyVoiceGain(); audioBuf.removeAll(); pendingSync = nil; syncWait = 0
             streaming = true; micStreaming = config.voiceStartsMic
@@ -457,12 +479,13 @@ final class Engine: ObservableObject {
             else if v.keycode != KeyNames.kNone { postKey(CGKeyCode(v.keycode), down: true, cmd: v.cmd, shift: v.shift, opt: v.opt, ctrl: v.ctrl) }
             L("🎤 语音键按下 → \(v.display)\(config.voiceStartsMic ? " + 麦克风开" : "")")
         } else {
+            voiceSession.stop()
             streaming = false; micStreaming = false
             if v.keycode >= KeyNames.kSpecialBase { stopSpecial(v.keycode) }
             else if v.keycode != KeyNames.kNone { postKey(CGKeyCode(v.keycode), down: false, cmd: false) }
             L("语音键松开")
             let elapsed = max(0, voiceRXEnded - voiceRXBegan)
-            L(String(format: "语音接收统计：%d 包 / %.2f 秒（%.1f 包/秒）", voiceRXCount, elapsed, elapsed > 0 ? Double(max(0, voiceRXCount - 1)) / elapsed : 0))
+            L(String(format: "语音接收统计：%d 包 / %.2f 秒（%.1f 包/秒），长录音保活 %d 次", voiceRXCount, elapsed, elapsed > 0 ? Double(max(0, voiceRXCount - 1)) / elapsed : 0, voiceSession.sentCount))
             voiceTarget = nil
         }
     }
@@ -481,6 +504,24 @@ final class Engine: ObservableObject {
             Task { @MainActor in self?.googleTick() }
         }
     }
+    private func maybeAutoStartGoogleCapture() {
+        guard config.effectiveAutoStartGoogleCapture, !googleCapture.active,
+              !streaming, capturingUsage == nil else { return }
+        checkPermissions()
+        let ready = remoteConnected && isGoogleRemote && handshakeReady
+            && inputMonitoringOK && axTrusted && googleHIDDevices.count == 1
+            && GoogleCapture.packetLogger != nil
+        if captureStartup.shouldStart(enabled: config.effectiveAutoStartGoogleCapture, ready: ready, active: googleCapture.active) {
+            L("应用启动后自动开启谷歌按键接收")
+            startGoogleCapture(testOnly: googleTestMode)
+        }
+    }
+    func setAutoStartGoogleCapture(_ enabled: Bool) {
+        config.autoStartGoogleCapture = enabled
+        if enabled { captureStartup.reset() } else { captureStartup.suppress() }
+        saveConfig()
+        if enabled { maybeAutoStartGoogleCapture() }
+    }
     func startGoogleCapture(testOnly: Bool = false) {
         releaseGoogleButtons(); googleTestMode = testOnly
         checkPermissions()
@@ -489,10 +530,11 @@ final class Engine: ObservableObject {
         let identifier = isGoogleRemote ? dev?.identifier.uuidString : UserDefaults.standard.string(forKey: "GooglePeripheralID")
         guard let identifier else { L("请先连接 Chromecast Remote，让应用识别该设备"); return }
         capturePeripheralID = identifier.uppercased()
+        captureStartup.markAttempted()
         googleCapture.start(peripheralID: identifier)
         syncGoogleHIDAccess()
     }
-    func stopGoogleCapture() { releaseGoogleButtons(); googleCapture.stop() }
+    func stopGoogleCapture() { captureStartup.suppress(); releaseGoogleButtons(); googleCapture.stop() }
     func setGoogleTestMode(_ enabled: Bool) { releaseGoogleButtons(); googleTestMode = enabled }
     func useGoogleDefaults() {
         releaseGoogleButtons(); config.installGoogleDefaults(overwrite: true); saveConfig()
@@ -554,6 +596,26 @@ final class Engine: ObservableObject {
     }
     private func googleTick() {
         let now = ProcessInfo.processInfo.systemUptime
+        if streaming, isGoogleRemote,
+           VoiceSession.audioStalled(at: now, startedAt: voiceStartedAt, lastAudioAt: voiceRXCount > 0 ? voiceRXEnded : nil) {
+            if let id = voiceSession.streamID, let dev, dev.state == .connected, let tx, dev.canSendWriteWithoutResponse {
+                dev.writeValue(Data([0x0D, id]), for: tx, type: tx.properties.contains(.write) ? .withResponse : .withoutResponse)
+            }
+            voiceButton(down: false)
+            L("⚠️ 连续3秒未收到音频数据，已结束本次输入；请重新按住语音键")
+        }
+        if streaming, isGoogleRemote, let dev, dev.state == .connected, let tx {
+            let type: CBCharacteristicWriteType = tx.properties.contains(.write) ? .withResponse : .withoutResponse
+            if type == .withResponse || dev.canSendWriteWithoutResponse,
+               let command = voiceSession.poll(at: now) {
+                if let cm { _ = GoogleVoiceLink.request(central: cm, peripheral: dev, lowLatency: true) }
+                dev.writeValue(command, for: tx, type: type)
+                if voiceSession.sentCount % 6 == 0 {
+                    let elapsed = max(0.001, now - voiceRXBegan)
+                    L(String(format: "语音持续录音中：保活 %d 次，已接收 %d 包（%.1f 包/秒）", voiceSession.sentCount, voiceRXCount, Double(max(0, voiceRXCount - 1)) / elapsed))
+                }
+            }
+        }
         if !googleState.held.isEmpty && now - lastGooglePacketAt > 8 {
             releaseGoogleButtons(); L("Google 缺失松开保护：已释放所有按键（单次按住上限 8 秒）")
         }
@@ -567,6 +629,7 @@ final class Engine: ObservableObject {
         }
     }
     func shutdown() {
+        voiceSession.stop()
         if isGoogleRemote, let cm, let dev {
             _ = GoogleVoiceLink.request(central: cm, peripheral: dev, lowLatency: false)
         }

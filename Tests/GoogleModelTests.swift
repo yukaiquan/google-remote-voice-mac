@@ -31,6 +31,7 @@ import Foundation
         check(launch.launchURL == nil && launch.display == "F9", "switching back to shortcut disables launch")
         let physical: Set<Int> = [1,3,4,5,6,7,8,10,11,12,13,14,15,17]
         var config = Config.defaultConfig
+        check(config.effectiveAutoStartGoogleCapture, "capture auto-start is enabled by default")
         check(config.effectiveVoiceGainDB == 18, "recommended volume adds 6 dB over previous 12 dB setting")
         config.voiceGainDB = -100
         check(config.effectiveVoiceGainDB == 0, "volume lower bound")
@@ -60,8 +61,13 @@ import Foundation
         let gainConfig = try! JSONDecoder().decode(Config.self, from: gainJSON)
         let gainEncoded = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(gainConfig)) as! [String:Any]
         check(gainEncoded["voiceGainDB"] as? Double == 18, "microphone volume survives config roundtrip")
+        let autoJSON = #"{"buttons":[],"voice":{"usage":-1,"name":"voice","keycode":54,"cmd":true,"shift":false,"opt":false,"ctrl":false},"voiceStartsMic":true,"autoStartGoogleCapture":false}"#.data(using:.utf8)!
+        let autoConfig = try! JSONDecoder().decode(Config.self, from:autoJSON)
+        let autoEncoded = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(autoConfig)) as! [String:Any]
+        check(autoEncoded["autoStartGoogleCapture"] as? Bool == false, "auto-start preference survives config roundtrip")
         var old = try! JSONDecoder().decode(Config.self, from: legacy)
         check(old.effectiveVoiceGainDB == 18, "legacy config receives recommended volume without losing key mappings")
+        check(old.effectiveAutoStartGoogleCapture, "legacy config enables automatic capture without changing mappings")
         old.mergeKnown()
         check(old.buttons.count == Config.known.count, "legacy config acquires all known keys")
         print("\(checked-failed)/\(checked) model checks passed")
