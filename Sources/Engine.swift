@@ -229,7 +229,7 @@ final class Engine: ObservableObject {
     func clearMapping(usage: Int) {
         if usage == -1 { config.voice.keycode = KeyNames.kNone; config.voice.cmd = false; config.voice.shift = false; config.voice.opt = false; config.voice.ctrl = false }
         else if let i = config.buttons.firstIndex(where: { $0.usage == usage }) {
-            config.buttons[i].keycode = KeyNames.kNone; config.buttons[i].cmd = false
+            config.buttons[i].openTarget = nil; config.buttons[i].keycode = KeyNames.kNone; config.buttons[i].cmd = false
             config.buttons[i].shift = false; config.buttons[i].opt = false; config.buttons[i].ctrl = false
         }
         saveConfig()
@@ -281,13 +281,29 @@ final class Engine: ObservableObject {
         if usage == -1 {
             config.voice.keycode = keycode; config.voice.cmd = cmd; config.voice.shift = shift; config.voice.opt = opt; config.voice.ctrl = ctrl
         } else if let i = config.buttons.firstIndex(where: { $0.usage == usage }) {
-            config.buttons[i].keycode = keycode; config.buttons[i].cmd = cmd
+            config.buttons[i].openTarget = nil; config.buttons[i].keycode = keycode; config.buttons[i].cmd = cmd
             config.buttons[i].shift = shift; config.buttons[i].opt = opt; config.buttons[i].ctrl = ctrl
         }
         let label = KeyNames.label(keycode: keycode, cmd: cmd, shift: shift, opt: opt, ctrl: ctrl)
         L("已录制映射 → \(label)")
         capturingUsage = nil
         saveConfig()
+    }
+
+    func setLaunchTarget(usage: Int, url: URL) {
+        guard [14, 15].contains(usage), let i = config.buttons.firstIndex(where: { $0.usage == usage }) else { return }
+        var mapping = ButtonMapping(usage: usage, name: config.buttons[i].name, keycode: KeyNames.kOpenTarget)
+        mapping.openTarget = url.absoluteString
+        guard mapping.launchURL != nil else { L("仅支持 http/https 网址或 .app 应用"); return }
+        releaseGoogleButtons()
+        config.buttons[i] = mapping
+        saveConfig()
+    }
+    func testMapping(usage: Int) {
+        guard let mapping = config.buttons.first(where: { $0.usage == usage }) else { return }
+        guard mapping.keycode == KeyNames.kOpenTarget || axTrusted else { L("测试快捷键需要辅助功能权限"); return }
+        sendMapping(mapping, down: true)
+        sendMapping(mapping, down: false)
     }
 
     func saveConfig() { ConfigStore.save(config); L("配置已保存") }
@@ -585,7 +601,12 @@ final class Engine: ObservableObject {
         }
     }
     private func sendMapping(_ mapping: ButtonMapping, down: Bool, repeatKey: Bool = false) {
-        if mapping.keycode >= KeyNames.kSpecialBase {
+        if mapping.keycode == KeyNames.kOpenTarget {
+            if down && !repeatKey {
+                guard let url = mapping.launchURL else { L("打开失败：目标无效，请重新设置应用或网址"); return }
+                if !NSWorkspace.shared.open(url) { L("打开失败：系统无法打开所选应用或网址") }
+            }
+        } else if mapping.keycode >= KeyNames.kSpecialBase {
             if down { startSpecial(mapping.keycode) } else { stopSpecial(mapping.keycode) }
         } else if mapping.keycode != KeyNames.kNone {
             postKey(CGKeyCode(mapping.keycode), down: down, cmd: mapping.cmd, shift: mapping.shift, opt: mapping.opt, ctrl: mapping.ctrl, autorepeat: repeatKey)
@@ -761,7 +782,7 @@ final class Engine: ObservableObject {
         L(String(format: "按键 0x%02x [%@] → %@", usage, m.name, m.display))
         if m.keycode == KeyNames.kNone { downButtonUsage = Int(usage); downTarget = nil; return } // keep original
         if m.keycode >= KeyNames.kSpecialBase {   // 鼠标/滚轮：按住持续，松开停止
-            startSpecial(m.keycode); downButtonUsage = Int(usage); downTarget = m; return
+            sendMapping(m, down: true); downButtonUsage = Int(usage); downTarget = m; return
         }
         // emit mapped key (down); keyUp on release
         postKey(CGKeyCode(m.keycode), down: true, cmd: m.cmd, shift: m.shift, opt: m.opt, ctrl: m.ctrl)
@@ -834,7 +855,7 @@ final class Engine: ObservableObject {
         if usage == -1 {
             config.voice.keycode = keycode; config.voice.cmd = false; config.voice.shift = false; config.voice.opt = false; config.voice.ctrl = false
         } else if let i = config.buttons.firstIndex(where: { $0.usage == usage }) {
-            config.buttons[i].keycode = keycode; config.buttons[i].cmd = false
+            config.buttons[i].openTarget = nil; config.buttons[i].keycode = keycode; config.buttons[i].cmd = false
             config.buttons[i].shift = false; config.buttons[i].opt = false; config.buttons[i].ctrl = false
         }
         L("已设置映射 → \(KeyNames.label(keycode: keycode, cmd: false, shift: false, opt: false, ctrl: false))")

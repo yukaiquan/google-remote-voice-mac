@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- YouTube / Netflix 支持选择应用、网址或录制快捷键，增加测试按钮。
+- 打开动作只响应按下，配置兼容旧版本。
+
 ## 0.1.0 — 2026-10-31
 
 - 从 MIT mi-remote-mapper 扩展为 Google Chromecast Voice Remote 专版，保留历史与归属。

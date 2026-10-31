@@ -64,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.performClose(nil)
         if settingsWindow == nil {
             let win = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 780, height: 800),
+                contentRect: NSRect(x: 0, y: 0, width: 880, height: 800),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered, defer: false)
             win.title = "Google Remote Voice · 设置"

@@ -20,6 +20,7 @@ enum KeyNames {
         0x29:";",0x27:"'",0x2B:",",0x2F:".",0x2C:"/",0x32:"`",
     ]
     // 特殊动作（鼠标/滚轮）：占用 0x10000 以上的伪键码
+    static let kOpenTarget = 0x10020
     static let kSpecialBase = 0x10000
     static let kMouseUp = 0x10001, kMouseDown = 0x10002, kMouseLeft = 0x10003, kMouseRight = 0x10004
     static let kMouseClick = 0x10005, kMouseRClick = 0x10006
@@ -88,14 +89,28 @@ struct ButtonMapping: Identifiable, Codable {
     var shift: Bool
     var opt: Bool
     var ctrl: Bool
+    var openTarget: String? = nil
     var id: Int { usage }
 
     init(usage: Int, name: String, keycode: Int = 0xFFFF, cmd: Bool = false, shift: Bool = false, opt: Bool = false, ctrl: Bool = false) {
         self.usage = usage; self.name = name; self.keycode = keycode
         self.cmd = cmd; self.shift = shift; self.opt = opt; self.ctrl = ctrl
     }
-    var display: String { KeyNames.label(keycode: keycode, cmd: cmd, shift: shift, opt: opt, ctrl: ctrl) }
-    var actionID: String { "\(keycode):\(cmd):\(shift):\(opt):\(ctrl)" }
+    var launchURL: URL? {
+        guard keycode == KeyNames.kOpenTarget, let target = openTarget,
+              let url = URL(string: target) else { return nil }
+        if ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host?.isEmpty == false { return url }
+        if url.isFileURL, url.pathExtension.lowercased() == "app" { return url }
+        return nil
+    }
+    var display: String {
+        if keycode == KeyNames.kOpenTarget {
+            guard let url = launchURL else { return "未设置打开目标" }
+            return "打开 " + (url.isFileURL ? url.deletingPathExtension().lastPathComponent : url.absoluteString)
+        }
+        return KeyNames.label(keycode: keycode, cmd: cmd, shift: shift, opt: opt, ctrl: ctrl)
+    }
+    var actionID: String { "\(keycode):\(cmd):\(shift):\(opt):\(ctrl):\(openTarget ?? "")" }
 }
 
 struct Config: Codable {

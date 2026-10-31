@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct StatusDot: View {
     let ok: Bool
@@ -70,7 +71,7 @@ struct ContentView: View {
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 740, minHeight: 640)
+        .frame(minWidth: 840, minHeight: 640)
         .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
             e.checkPermissions()
         }
@@ -167,15 +168,55 @@ struct ContentView: View {
             } else {
                 Button("录制") { e.beginCapture(usage: usage) }
                 Menu("动作") {
+                    if [14, 15].contains(usage) {
+                        Button("打开应用…") { chooseApplication(usage: usage) }
+                        Button("打开网址…") { chooseWebsite(usage: usage) }
+                        Button(usage == 14 ? "设为打开 YouTube" : "设为打开 Netflix") {
+                            e.setLaunchTarget(usage: usage, url: URL(string: usage == 14 ? "https://www.youtube.com/" : "https://www.netflix.com/")!)
+                        }
+                        Divider()
+                    }
                     ForEach(KeyNames.specials, id: \.code) { sp in
                         Button(sp.name) { e.setSpecial(usage: usage, keycode: sp.code) }
                     }
                 }
                 .menuStyle(.borderlessButton)
                 .frame(width: 92)
+                if [14, 15].contains(usage) {
+                    Button("测试") { e.testMapping(usage: usage) }
+                }
                 Button("清除") { e.clearMapping(usage: usage) }.foregroundColor(.secondary)
             }
             Spacer()
+        }
+    }
+
+    func chooseApplication(usage: Int) {
+        let panel = NSOpenPanel()
+        panel.title = "选择这个遥控器按键要打开的应用"
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        if panel.runModal() == .OK, let url = panel.url { e.setLaunchTarget(usage: usage, url: url) }
+    }
+    func chooseWebsite(usage: Int) {
+        let alert = NSAlert()
+        alert.messageText = "设置按键打开的网址"
+        alert.informativeText = "请输入完整的 http:// 或 https:// 网址，保存后立即生效。"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.stringValue = e.config.buttons.first(where: { $0.usage == usage })?.launchURL.flatMap { $0.isFileURL ? nil : $0.absoluteString } ?? "https://"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = field
+        while alert.runModal() == .alertFirstButtonReturn {
+            let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host?.isEmpty == false {
+                e.setLaunchTarget(usage: usage, url: url)
+                return
+            }
+            alert.informativeText = "网址无效，请输入带域名的 http:// 或 https:// 网址。"
         }
     }
 
@@ -196,7 +237,7 @@ struct ContentView: View {
             Text("点「录制」后在 Mac 键盘上按目标键（支持组合键/修饰键）。").font(.caption).foregroundColor(.secondary)
             Group {
                 HStack {
-                    Text("电源/YouTube/Netflix 默认 F12/F9/F10，可按需要录制。音量键默认控制系统音量。")
+                    Text("YouTube / Netflix：点“动作”选择应用或网址，也可“录制”快捷键。修改自动保存，可点“测试”。")
                         .font(.caption).foregroundColor(.secondary)
                     Button("恢复谷歌默认映射") { e.useGoogleDefaults() }
                 }
