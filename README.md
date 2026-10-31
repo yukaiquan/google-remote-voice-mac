@@ -1,16 +1,73 @@
-# Google Remote Voice for Mac
+<p align="center">
+  <img src="docs/assets/hero.svg" alt="Google Remote Voice for Mac — 按住说话，松开输入" width="100%">
+</p>
 
-**把谷歌遥控器变成 Mac 的按住说话麦克风与快捷键控制器。**
+<h1 align="center">Google Remote Voice for Mac</h1>
 
-[![CI](https://github.com/zolo1978/google-remote-voice-mac/actions/workflows/ci.yml/badge.svg)](https://github.com/zolo1978/google-remote-voice-mac/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/macOS-14%2B-black)](#兼容性)
+<p align="center">
+  <strong>让谷歌遥控器，成为 Mac 上随手可用的语音输入按钮。</strong><br>
+  按住说话 · 松开转写 · 全键自定义
+</p>
+
+<p align="center">
+  <a href="https://github.com/zolo1978/google-remote-voice-mac/actions/workflows/ci.yml"><img src="https://github.com/zolo1978/google-remote-voice-mac/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-a7e8ce" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B-152b37?logo=apple&amp;logoColor=white" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/chip-Apple_Silicon-152b37" alt="Apple Silicon">
+  <a href="https://github.com/cjpais/Handy"><img src="https://img.shields.io/badge/pairs_with-Handy-a7e8ce" alt="搭配 Handy"></a>
+</p>
+
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="docs/HANDY.md">Handy 配置指南</a> ·
+  <a href="#默认按键">按键说明</a> ·
+  <a href="docs/TROUBLESHOOTING.md">故障排查</a> ·
+  <a href="https://github.com/zolo1978/google-remote-voice-mac/issues">反馈问题</a>
+</p>
+
+---
 
 一只已有的 Chromecast Voice Remote，就可以成为轻量、低成本的语音输入硬件：拿起、按住语音键、说话，再把音频交给你选择的输入法。本项目负责连接、麦克风音频与按键映射，**不内置语音识别模型**。
 
 基于 [81199000/mi-remote-mapper](https://github.com/81199000/mi-remote-mapper) 扩展，专注 **Google Chromecast Voice Remote（G9N9N）**。保留上游历史与 MIT 版权，新增 Google ATVV 适配、语音低延迟连接请求、单字节按键接收、全键配置和按需日志恢复。
 
 > 当前为 0.1 开源实验版。按键接收依赖 Apple 的蓝牙诊断工具及未承诺稳定的 HCI 调试接口，需要管理员授权；已在一台 macOS 15.8.2 / Apple Silicon 机器实测，不能代表所有系统、固件及兼容款。
+
+## 一套配齐：遥控器 + BlackHole + Handy
+
+| 组件 | 在这套方案里负责什么 | 获取入口 |
+| --- | --- | --- |
+| **Chromecast Voice Remote** | 实体语音键、麦克风与自定义按键 | 优先使用已有设备；[核对兼容性](#兼容性) |
+| **Google Remote Voice** | 连接遥控器、解码音频、映射按键 | [下方安装步骤](#快速开始) |
+| **BlackHole 2ch** | 把遥控器音频送进语音识别工具 | [开源项目与安装说明](https://github.com/ExistentialAudio/BlackHole) |
+| **Handy** | 在本机把语音转成文字，粘贴到当前文本框 | **[官网下载](https://handy.computer/) · [GitHub](https://github.com/cjpais/Handy) · [发行版本](https://github.com/cjpais/Handy/releases/latest)** |
+| **Apple PacketLogger** | 接收常规 HID 未转交的普通按键通知 | [Apple 官方下载页](https://developer.apple.com/download/all/?q=Additional%20Tools)（需 Apple 账号） |
+
+> **第一次用？** 先按[快速开始](#快速开始)装好本项目，再照着 [Handy 配置指南](docs/HANDY.md)设置 **BlackHole 2ch + 按住说话 + 相同快捷键**。
+
+Handy 是独立的免费开源语音转文字工具，支持本地离线识别；本项目不捆绑它。不同软件版本的界面可能有变化，下载入口始终指向其官方站点与仓库。
+
+## 快速开始
+
+```sh
+git clone https://github.com/zolo1978/google-remote-voice-mac.git
+cd google-remote-voice-mac
+./install.sh
+```
+
+安装脚本会检查 Homebrew、BlackHole 与编译工具，构建并复制 `Google Remote Voice.app` 到“应用程序”。如果首次安装 BlackHole 后无法看到设备，按驱动说明重启。
+
+另行从 Apple 下载 PacketLogger，将 **PacketLogger.app** 放入 `/Applications`，或在本应用中点击“选择工具…”。只下载磁盘镜像但不保留工具位置，会影响下次启动。
+
+首次打开：
+
+1. 在 Mac 系统蓝牙设置中配对并连接遥控器。
+2. 打开 **Google Remote Voice**，授予蓝牙、辅助功能、输入监控权限。
+3. 设备和权限就绪后，应用默认自动开启按键接收；在系统窗口完成管理员授权。想逐键核对时，再打开“按键检测模式”。
+4. 每个实体键各按一次，核对已收到计数。检测模式下普通键不执行映射；语音仍独立工作。
+5. 关闭检测模式，开始使用映射。
+
+**停止或退出应用会恢复日志设置。** “应用启动后自动开启按键接收”默认启用；取消授权或手动停止后，本次运行不会循环弹窗或强行重开。可在设置中关闭自动开启。 不需要长期安装蓝牙日志描述文件。请先退出其他正在采集同一遥控器的应用。
 
 ## 为什么把它作为语音输入硬件
 
@@ -33,10 +90,10 @@ Google 官方规格列有蓝牙、内置语音麦克风及两节 AAA 电池供�
 | 遥控器麦克风 → BlackHole | ATVV / 16 kHz 单声道 ADPCM，实机已确认人声 |
 | 普通实体键 | 实测收到 14/14 的按下与释放 |
 | 语音键 | 独立 ATVV 按下/松开，可同时触发快捷键与麦克风 |
-| 自定义动作 | Mac 键盘组合、鼠标移动/点击/拖拽、滚轮、系统音量/静音 |
+| 自定义动作 | Mac 快捷键、打开应用/网址、鼠标、滚轮、音量与静音 |
 | 防重复触发 | 接收期间独占目标遥控器原生 HID，停止后释放 |
-| 清理与恢复 | 停止、退出、父进程结束时释放按键并恢复日志设置 |
-| 语音转文字 | 由外部输入法负责；具体工具和版本需实际验证 |
+| 断线与恢复 | 未绑定时自动刷新连接；停止、退出时释放按键并恢复日志设置 |
+| 语音转文字 | 可搭配 Handy；已有本地端到端验证，其他版本需复验 |
 
 不包含 Windows/Linux 版本；不支持 Apple Siri Remote；Google TV Streamer 的 GY3LE 遥控器尚未验证。
 
@@ -63,43 +120,26 @@ flowchart LR
 - PacketLogger 必须从 [Apple 官方 Additional Tools for Xcode](https://developer.apple.com/bluetooth/) 获取，可能需要登录 Apple 账号。**仓库不打包 Apple 工具。**
 - 本次使用的 PacketLogger App 最低系统要求为 macOS 14，CLI 自报 26.0；其他版本需复验。
 
-## 安装
+## 配套 Handy：按住说话，松开出字
 
-```sh
-git clone https://github.com/zolo1978/google-remote-voice-mac.git
-cd google-remote-voice-mac
-./install.sh
-```
+**[下载 Handy](https://handy.computer/) · [查看 Handy 源码](https://github.com/cjpais/Handy) · [完整配置指南](docs/HANDY.md)**
 
-安装脚本会检查 Homebrew、BlackHole 与编译工具，构建并复制 `Google Remote Voice.app` 到“应用程序”。如果首次安装 BlackHole 后无法看到设备，按驱动说明重启。
+| 设置位置 | 建议配置 |
+| --- | --- |
+| Handy → 输入设备 | **BlackHole 2ch**，不要依赖系统默认麦克风 |
+| Handy → 录音方式 | **Push to Talk / 按住说话** |
+| Handy → 快捷键 | 与本应用语音键完全一致，例如**右 Command** |
+| 本应用 → 语音键 | 保留“同时开启麦克风” |
+| Handy → 识别模型 | 选择支持中文的本地模型，首次使用先完成模型下载 |
 
-另行从 Apple 下载 PacketLogger，将 **PacketLogger.app** 放入 `/Applications`，或在本应用中点击“选择工具…”。只下载磁盘镜像但不保留工具位置，会影响下次启动。
+将光标放进文本框，按住遥控器语音键说一句话，松开后等待 Handy 转写。需要自定义触发键时，在本应用点“录制”，再在 **Mac 键盘**上按目标组合键，并在 Handy 中设置同一个组合键。
 
-首次打开：
+文字准确度、是否使用云端后处理以及如何交付文字，由输入工具及其配置决定。重复出字时，先检查是否同时启用了 macOS“语音控制”或另一款使用相同热键的听写软件，详见[配套指南](docs/HANDY.md#常见问题)。
 
-1. 在 Mac 系统蓝牙设置中配对并连接遥控器。
-2. 打开 **Google Remote Voice**，授予蓝牙、辅助功能、输入监控权限。
-3. 设备和权限就绪后，应用默认自动开启按键接收；在系统窗口完成管理员授权。想逐键核对时，再打开“按键检测模式”。
-4. 每个实体键各按一次，核对已收到计数。检测模式下普通键不执行映射；语音仍独立工作。
-5. 关闭检测模式，开始使用映射。
+## 语音与实测记录
 
-**停止或退出应用会恢复日志设置。** “应用启动后自动开启按键接收”默认启用；取消授权或手动停止后，本次运行不会循环弹窗或强行重开。可在设置中关闭自动开启。 不需要长期安装蓝牙日志描述文件。请先退出其他正在采集同一遥控器的应用。
-
-## 接入本地语音输入
-
-可搭配 [Handy](https://github.com/cjpais/Handy) 等支持虚拟麦克风与自定义触发键的工具。Handy 提供离线语音识别；本项目不捆绑它，也不保证所有版本均已端到端验收。
-
-配置示例：
-
-1. 在输入工具里选择支持中文的本地模型。
-2. 输入设备设为 **BlackHole 2ch**。
-3. 选择“按住录音”行为并设一个不冲突的快捷键，例如 `⌥D`。
-4. 在本应用的“语音键”行点击“录制”，**在 Mac 键盘上按同一快捷键**，保留“同时开启麦克风”。
-5. 在空白文本框中验证按住、说话、松开与文字交付。若输入工具使用点按切换模式，需按其触发语义另行配置。
-
-本项目只有音频桥接和按键功能。文字是否准确、是否发送云端、如何插入光标，由你选用的输入工具决定。
-
-## 语音音质与连接速率
+<details>
+<summary><strong>音质、连接速率与麦克风音量</strong> — 展开查看原理与样机数据</summary>
 
 已测试样机默认连接时，160 字节语音通知仅约 32 包/秒，无法连续供给 16 kHz / 4-bit ADPCM 所需的约 50 包/秒。应用对选中的 Google 遥控器请求低延迟后，本地对照收到 **573 包，首末包跨度 11.459 秒（按 572 个间隔计算约 49.92 包/秒）**，解码时长 11.460 秒；仅为本次样机与系统的结果。
 
@@ -109,11 +149,16 @@ cd google-remote-voice-mac
 
 在“语音键”设置中拖动 **麦克风音量** 滑杆即可调节并自动保存；“推荐音量”恢复 18 dB。新版推荐值比初次修复的 12 dB 提高约 6 dB。放大会同时放大声音和环境噪声，靠近麦克风通常比盲目拉到最大更有效。
 
-## 连续长按语音
+</details>
+
+<details>
+<summary><strong>连续长按输入</strong> — 展开查看保活机制与时长边界</summary>
 
 保持按住语音键即可持续输入，松开后由 Handy 一次转写；Handy 保持“按住说话”，输入选择 BlackHole 2ch。应用按当前 ATVV v1.0 会话 ID 每5秒发送 MIC_EXTEND，松开、断线、退出停止保活。普通键的8秒缺失松开保护不作用于语音。
 
 停顿不等于停止：只要遥控器仍发送音频数据，安静时也保持录音；连续3秒收不到任何音频数据时，会结束本次输入并提示重新按住，避免空录或丢失松开事件后持续采集。本机一次持续长按实测：95.07 秒收到 4726 包（约49.7包/秒），发送19次保活，Handy只生成一条结果。结束时出现蓝牙断开，用户确认这一时长已满足当前用途；这不是保证95秒的固定上限，也没有通过3分钟或无限时长验收。
+
+</details>
 
 ## 默认按键
 
@@ -143,7 +188,7 @@ sh scripts/run-tests.sh
 ./build.sh
 ```
 
-无特权检查目前包含 60 项 Swift 解析/状态/恢复策略检查、42 项配置检查、8 项音频/接口边界检查、83 项语音会话检查、8 项自动启动检查及 8 项 Python 回归。管理员助手的启动/恢复实测需要 Apple 工具和知情授权，不在 CI 自动执行。
+无特权检查目前包含 66 项 Swift 解析/状态/恢复策略检查、42 项配置检查、8 项音频/接口边界检查、83 项语音会话检查、8 项自动启动检查及 8 项 Python 回归。管理员助手的启动/恢复实测需要 Apple 工具和知情授权，不在 CI 自动执行。
 
 本地长期使用建议固定签名身份，避免每次临时签名变化导致权限失效：
 
