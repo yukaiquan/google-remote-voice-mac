@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/cover.png" alt="Google Remote Voice：开口，就开工。按住说话，松开输入。" width="100%">
+  <img src="docs/assets/cover-g9n9n.png" alt="Google Remote Voice：开口，就开工。按住说话，松开输入。" width="100%">
   <br><sub>Google Remote Voice for Mac · 社区开源项目 · 封面为概念插画</sub>
 </p>
 
