@@ -246,7 +246,6 @@ do {
         if kill(parent, 0) != 0 || FileManager.default.fileExists(atPath: stopPath) {
             finish("应用停止接收，已恢复原设置"); return
         }
-        if Date().timeIntervalSince(began) > 12 * 3600 { finish("达到 12 小时会话上限，请重新开启接收"); return }
         if !sourceReady && Date().timeIntervalSince(began) > 15 {
             finish(errorText.contains("Profile") ? "系统未允许诊断接收，需要检查蓝牙日志配置" : "未收到有效蓝牙记录，请重试", failed: true); return
         }
