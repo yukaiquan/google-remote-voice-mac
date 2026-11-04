@@ -4,6 +4,13 @@
 set -e
 cd "$(dirname "$0")"
 
+# Newer SDKs implement SwiftUI's @State as a macro whose plugin ships only with Xcode,
+# so prefer the full Xcode toolchain when it is installed.
+# 新版 SDK 中 SwiftUI 的 @State 是宏，其插件只随 Xcode 提供；若已安装 Xcode 则优先使用。
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
+
 mkdir -p build
 STAGE="$(mktemp -d build/candidate.XXXXXX)"
 APP="$STAGE/Google Remote Voice.app"

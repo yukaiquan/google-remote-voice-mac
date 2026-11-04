@@ -52,6 +52,9 @@ final class Engine: ObservableObject {
     @Published private(set) var googleInputIssue = ""
     private var googleHIDDevices: [Int: IOHIDDevice] = [:]
     private var googleSeized: Set<Int> = []
+    // Seize is performed by the root capture helper (kernel requires root for keyboard-class HID).
+    private var helperSeizedCount = 0
+    private var helperSeizeNote = ""
     private var capturePeripheralID: String?
     private var googleState = GoogleButtonState()
     private var googleTargets: [Int: ButtonMapping] = [:]
@@ -551,6 +554,10 @@ final class Engine: ObservableObject {
             releaseGoogleButtons()
             if !record.message.isEmpty { L(record.message) }
         case "ready": L(record.message)
+        case "seize":
+            helperSeizedCount = record.buttons.first ?? 0
+            helperSeizeNote = record.message
+            syncGoogleHIDAccess()
         default: break
         }
     }
@@ -649,22 +656,17 @@ final class Engine: ObservableObject {
             deviceCount: googleHIDDevices.count, connected: remoteConnected && isGoogleRemote,
             currentID: dev?.identifier.uuidString, sessionID: capturePeripheralID)
         if !exclusive { releaseGoogleButtons() }
-        for (id, device) in googleHIDDevices {
-            if exclusive && !googleSeized.contains(id) {
-                IOHIDDeviceClose(device, 0)
-                let result = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
-                if result == kIOReturnSuccess {
-                    googleSeized.insert(id); googleInputIssue = ""
-                    L("Google 原生按键已独占接收，避免系统动作与映射双发")
-                } else {
-                    _ = IOHIDDeviceOpen(device, 0)
-                    googleInputIssue = "无法取得独占输入（\(result)），映射已暂停；请检查输入监控权限或其他遥控器软件"
-                    releaseGoogleButtons()
-                }
-            } else if !exclusive && googleSeized.contains(id) {
-                IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
-                _ = IOHIDDeviceOpen(device, 0); googleSeized.remove(id)
-                L("Google 原生按键接收已释放")
+        if !googleCapture.active { helperSeizedCount = 0; helperSeizeNote = "" }
+        let wasSeized = !googleSeized.isEmpty
+        if exclusive && helperSeizedCount == 1 {
+            googleSeized = Set(googleHIDDevices.keys)
+            if !wasSeized { googleInputIssue = ""; L(helperSeizeNote.isEmpty ? "Google 原生按键已由接收助手独占" : helperSeizeNote) }
+        } else {
+            if wasSeized { releaseGoogleButtons(); L("Google 原生按键独占已解除，映射暂停") }
+            googleSeized.removeAll()
+            if exclusive {
+                googleInputIssue = helperSeizedCount > 1 ? "检测到多支同款遥控器，映射已暂停"
+                    : (helperSeizeNote.isEmpty ? "等待接收助手独占遥控器输入…" : helperSeizeNote)
             }
         }
         if googleCapture.active && googleHIDDevices.count != 1 {

@@ -34,7 +34,11 @@ import Foundation
         check(decoder.feed("2026-10-31T17:00:02  HCI Event  Chromecast Remote  0x0041  RECV  Disconnection Complete")?.kind == "disconnected", "disconnect event")
         check(decoder.feed(notify("03")) == nil, "ignore after disconnect until identity rebound")
         check(decoder.feed(connected.replacingOccurrences(of:"0x0041",with:"0x0042"))?.kind == "connected", "bind new connection handle")
-        check(decoder.feed(notify("03",handle:"0x0042"))?.buttons == [3], "receive on new connection")
+        check(decoder.feed(notify("03", handle:"0x0042"))?.buttons == [3], "receive on new connection")
+        check(decoder.feed(notify("4200", handle:"0x0042", attribute:"0x002B"))?.buttons == [3], "decode 16-bit LE consumer usage on 0x002B (Up)")
+        check(decoder.feed(notify("2402", handle:"0x0042", attribute:"0x002B"))?.buttons == [11], "decode 16-bit LE consumer usage on 0x002B (Back 0x0224)")
+        check(decoder.feed(notify("8901", handle:"0x0042", attribute:"0x002B"))?.buttons == [17], "decode 16-bit LE consumer usage on 0x002B (Input 0x0189)")
+        check(decoder.feed(notify("0000", handle:"0x0042", attribute:"0x002B"))?.buttons == [], "decode 16-bit LE release on 0x002B")
 
         var recovery = GoogleCaptureRecovery()
         check(!recovery.shouldRefresh(bound: false, now: 4), "wait before refreshing an unbound snapshot")

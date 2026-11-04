@@ -14,8 +14,29 @@ struct GooglePacketDecoder {
     init(peripheralID: String, attribute: UInt16) {
         self.peripheralID = peripheralID.uppercased(); self.attribute = attribute
     }
+    // Firmware variant (e.g. Report ID 2, Handle 0x002B) sends 16-bit LE Consumer usage directly
+    // instead of 1-byte array indices (1..17) on Handle 0x0046.
+    private static let consumerUsageToButton: [UInt16: Int] = [
+        0x0030: 1, 0x019E: 1, // 电源
+        0x00CD: 2,            // 播放/暂停
+        0x0042: 3,            // 方向 上
+        0x0043: 4,            // 方向 下
+        0x0044: 5,            // 方向 左
+        0x0045: 6,            // 方向 右
+        0x0041: 7,            // 确认 OK
+        0x00E2: 8,            // 静音
+        0x0221: 9,            // 星标/自定义
+        0x0223: 10,           // 主页
+        0x0224: 11,           // 返回
+        0x00E9: 12,           // 音量 +
+        0x00EA: 13,           // 音量 −
+        0x0077: 14,           // YouTube
+        0x0078: 15,           // Netflix
+        0x0079: 16,           // 播放
+        0x0089: 17, 0x0189: 17, 0x01BB: 17 // 输入源
+    ]
     private static let row = try! NSRegularExpression(pattern:
-        #"^\S+\s{2,}(Config|ATT Receive|HCI Event)\s{2,}Chromecast Remote\s{2,}(0x[0-9a-fA-F]+)\s{2,}RECV\s{2,}(.*)$"#)
+        #"^\S+\s{2,}(Config|ATT Receive|HCI Event)\s{2,}(.*?)\s{2,}(0x[0-9a-fA-F]+)\s{2,}RECV\s{2,}(.*)$"#)
     private static let notification = try! NSRegularExpression(pattern:
         #"^Handle Value Notification - Handle:(0x[0-9a-fA-F]+) - Value: ([0-9a-fA-F]+(?: [0-9a-fA-F]+)*)(?:\s{2,}|$)"#)
     mutating func feed(_ line: String) -> GoogleCaptureRecord? {
@@ -23,14 +44,15 @@ struct GooglePacketDecoder {
         guard let row = Self.row.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
         let ns = text as NSString
         let kind = ns.substring(with: row.range(at: 1))
-        let handleText = ns.substring(with: row.range(at: 2))
+        let devName = ns.substring(with: row.range(at: 2)).lowercased()
+        let handleText = ns.substring(with: row.range(at: 3))
         guard let handle = UInt16(handleText.dropFirst(2), radix: 16) else { return nil }
-        let body = ns.substring(with: row.range(at: 3))
+        let body = ns.substring(with: row.range(at: 4))
         if kind == "Config", body.hasPrefix("Connected:"), body.uppercased().contains(peripheralID) {
             connection = handle
             return GoogleCaptureRecord(kind: "connected")
         }
-        guard connection == handle else { return nil }
+        guard connection == handle, devName.contains("chromecast") || devName.contains("g9n9n") else { return nil }
         if (kind == "HCI Event" && body.hasPrefix("Disconnection Complete")) || (kind == "Config" && body.hasPrefix("Disconnected:")) {
             connection = nil
             return GoogleCaptureRecord(kind: "disconnected")
@@ -38,8 +60,20 @@ struct GooglePacketDecoder {
         guard kind == "ATT Receive",
               let match = Self.notification.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)) else { return nil }
         let description = body as NSString
-        guard UInt16(description.substring(with: match.range(at: 1)).dropFirst(2), radix: 16) == attribute else { return nil }
+        guard let attHandle = UInt16(description.substring(with: match.range(at: 1)).dropFirst(2), radix: 16) else { return nil }
         let hex = description.substring(with: match.range(at: 2)).replacingOccurrences(of: " ", with: "")
+        if attHandle == 0x002B {
+            guard hex.count == 4 || hex.count == 6,
+                  let b0 = UInt16(hex.prefix(2), radix: 16),
+                  let b1 = UInt16(hex.dropFirst(2).prefix(2), radix: 16) else { return nil }
+            let usage = b0 | (b1 << 8)
+            if usage == 0 { return GoogleCaptureRecord(kind: "buttons", buttons: []) }
+            guard let btn = Self.consumerUsageToButton[usage] else {
+                return GoogleCaptureRecord(kind: "ready", message: String(format: "未知按键 Usage 0x%04X（来自 0x002B）", usage))
+            }
+            return GoogleCaptureRecord(kind: "buttons", buttons: [btn])
+        }
+        guard attHandle == attribute else { return nil }
         guard hex.count == 2 || hex.count == 4 else { return nil }
         var payload: [Int] = []
         var index = hex.startIndex

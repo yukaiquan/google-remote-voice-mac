@@ -2,6 +2,7 @@
 import Foundation
 import Security
 import Darwin
+import IOKit.hid
 
 struct CaptureFailure: LocalizedError {
     let text: String
@@ -65,6 +66,12 @@ func restoreSettings() throws {
     guard expected == restored else { throw CaptureFailure(text: "蓝牙日志设置恢复校验失败") }
     try FileManager.default.removeItem(at: backupURL)
 }
+
+// Exclusive (seize) access to keyboard-class HID devices is root-only in the kernel, so the
+// privileged helper holds it for the session; the kernel releases it when this process exits.
+// 键盘类 HID 的独占只允许 root；由本助手在会话期间持有，进程退出时内核自动释放。
+var seizedDevices: [Int: IOHIDDevice] = [:]   // main run loop only
+var seizeReporter: ((String) -> Void)?
 
 var writer: FileHandle?
 func emit(_ record: GoogleCaptureRecord) {
@@ -258,8 +265,40 @@ do {
     }
     do { try startChild() } catch { finish("无法启动 PacketLogger：\(error.localizedDescription)", failed: true) }
     emit(GoogleCaptureRecord(kind: "starting", message: "已临时开启诊断接收"))
+
+    // Seize only the Chromecast Remote (0x18D1:0x9450). The app still requires exactly one
+    // device and a matching BLE session before mapping; the count is reported for that check.
+    seizeReporter = { note in
+        let count = seizedDevices.count
+        queue.async {
+            guard !finished else { return }
+            emit(GoogleCaptureRecord(kind: "seize", buttons: [count], message: note))
+        }
+    }
+    let hidManager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+    IOHIDManagerSetDeviceMatching(hidManager, [kIOHIDVendorIDKey as String: 0x18D1,
+                                               kIOHIDProductIDKey as String: 0x9450] as CFDictionary)
+    IOHIDManagerRegisterDeviceMatchingCallback(hidManager, { _, _, _, device in
+        let id = (IOHIDDeviceGetProperty(device, kIOHIDUniqueIDKey as CFString) as? NSNumber)?.intValue ?? -1
+        guard id >= 0, seizedDevices[id] == nil else { return }
+        IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        let result = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+        if result == kIOReturnSuccess {
+            seizedDevices[id] = device
+            seizeReporter?("Google 原生按键已由接收助手独占，避免系统动作与映射双发")
+        } else {
+            seizeReporter?("接收助手无法独占遥控器输入（\(result)），映射已暂停")
+        }
+    }, nil)
+    IOHIDManagerRegisterDeviceRemovalCallback(hidManager, { _, _, _, device in
+        let id = (IOHIDDeviceGetProperty(device, kIOHIDUniqueIDKey as CFString) as? NSNumber)?.intValue ?? -1
+        if seizedDevices.removeValue(forKey: id) != nil { seizeReporter?("遥控器 HID 已断开，等待重连后重新独占") }
+    }, nil)
+    IOHIDManagerScheduleWithRunLoop(hidManager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+    _ = IOHIDManagerOpen(hidManager, IOOptionBits(kIOHIDOptionsTypeNone))
+
     timer.resume()
-    withExtendedLifetime((signals, timer, lockFD)) { RunLoop.main.run() }
+    withExtendedLifetime((signals, timer, lockFD, hidManager)) { RunLoop.main.run() }
 } catch {
     // Startup failures after backup creation must restore too, while holding the session lock.
     // Errors before owning the lock must never restore another live session.
